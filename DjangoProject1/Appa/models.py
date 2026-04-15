@@ -5,40 +5,41 @@ from django.contrib.gis.db import models
 # Create your models here.
 
 class Buses(models.Model):
-    id_bus = models.AutoField(primary_key=True),
-    plate = models.CharField(max_length=10, null=False, unique=True),
-    capacity = models.IntegerField(),
-    model = models.CharField(max_length=50),
+    id_bus = models.AutoField(primary_key=True)
+    plate = models.CharField(max_length=10, null=False, unique=True)
+    capacity = models.IntegerField()
+    model = models.CharField(max_length=50)
     state = models.CharField(max_length=20, default='Active')
+
     class Meta:
-        ordering = ['plate']
+        ordering = ['id_bus']
 
 class Drivers(models.Model):
     id_driver = models.AutoField(primary_key=True)
-    driver_name = models.CharField(max_length=100, null=False),
-    licence = models.CharField(max_length=20, null=False, unique=True),
-    fullname = models.CharField(max_length=50, null=False),
-    address = models.CharField(max_length=50, null=False),
-    phone_number = models.CharField(max_length=20, null=False),
+    driver_name = models.CharField(max_length=100, null=False)
+    licence = models.CharField(max_length=20, null=False, unique=True)
+    fullname = models.CharField(max_length=50, null=False)
+    address = models.CharField(max_length=50, null=False)
+    phone_number = models.CharField(max_length=20, null=False)
 
 class Departments(models.Model):
     id_department = models.AutoField(primary_key=True)
-    department_name = models.CharField(max_length=100, null=False),
+    department_name = models.CharField(max_length=100, null=False)
 
 class Cities(models.Model):
     id_city = models.AutoField(primary_key=True)
-    city_name = models.CharField(max_length=100, null=False),
+    city_name = models.CharField(max_length=100, null=False)
 
 class Places(models.Model):
     id_place = models.AutoField(primary_key=True)
-    place_name = models.CharField(max_length=50, null=False),
+    place_name = models.CharField(max_length=50, null=False)
     place_city = models.ForeignKey(Cities, on_delete=models.CASCADE, null=False)
     place_department = models.ForeignKey(Departments, on_delete=models.CASCADE, null=False)
     place_point = models.PointField(srid=4326)
 
 class Routes(models.Model):
-    id_route = models.AutoField(primary_key=True),
-    origin = models.ForeignKey(Places, on_delete=models.CASCADE, related_name='origin_route', null=False),
+    id_route = models.AutoField(primary_key=True)
+    origin = models.ForeignKey(Places, on_delete=models.CASCADE, related_name='origin_route', null=False)
     destination = models.ForeignKey(Places, on_delete=models.CASCADE, related_name='destination_route', null=False)
     distance_km = models.IntegerField()
 
@@ -96,7 +97,7 @@ class SeatsState(models.Model):
             )
         ]
 class SeatsStateRecord(models.Model):
-    id_record = models.ForeignKey(SeatsState, on_delete=models.CASCADE, null=False)
+    id_record = models.AutoField(primary_key=True)
     id_trip = models.ForeignKey(Trips, on_delete=models.CASCADE, null=False)
     id_seat = models.ForeignKey(Seats, on_delete=models.CASCADE, null=False)
     time_stamp = models.DateTimeField(default=timezone.now)

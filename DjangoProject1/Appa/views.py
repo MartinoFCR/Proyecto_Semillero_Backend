@@ -1,7 +1,10 @@
+
+from rest_framework import generics
+from rest_framework.permissions import IsAdminUser
+
+from DjangoProject1.Appa.models import Users
 from django.contrib.auth.models import Group, User
 from rest_framework import permissions, viewsets
-
-from DjangoProject1.Appa.serializers import GroupSerializer, UserSerializer
 
 
 class UserViewSet(viewsets.ModelViewSet):
@@ -9,8 +12,7 @@ class UserViewSet(viewsets.ModelViewSet):
     API endpoint that allows users to be viewed or edited.
     """
 
-    queryset = User.objects.all().order_by("-date_joined")
-    serializer_class = UserSerializer
+    queryset = Users.objects.all().order_by("-date_joined")
     permission_classes = [permissions.IsAuthenticated]
 
 
@@ -20,5 +22,4 @@ class GroupViewSet(viewsets.ModelViewSet):
     """
 
     queryset = Group.objects.all().order_by("name")
-    serializer_class = GroupSerializer
     permission_classes = [permissions.IsAuthenticated]
