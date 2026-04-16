@@ -12,6 +12,8 @@ class Buses(models.Model):
     state = models.CharField(max_length=20, default='Active')
 
     class Meta:
+        verbose_name_plural = 'Buses'
+        verbose_name = 'Bus'
         ordering = ['id_bus']
 
 class Drivers(models.Model):
@@ -22,13 +24,25 @@ class Drivers(models.Model):
     address = models.CharField(max_length=50, null=False)
     phone_number = models.CharField(max_length=20, null=False)
 
+    class Meta:
+        verbose_name_plural = 'Conductores'
+        verbose_name = 'Conductor'
+
 class Departments(models.Model):
     id_department = models.AutoField(primary_key=True)
     department_name = models.CharField(max_length=100, null=False)
 
+    class Meta:
+        verbose_name_plural = 'Departamentos'
+        verbose_name = 'Departamento'
+
 class Cities(models.Model):
     id_city = models.AutoField(primary_key=True)
     city_name = models.CharField(max_length=100, null=False)
+
+    class Meta:
+        verbose_name_plural = 'Ciudades'
+        verbose_name = 'Ciudad'
 
 class Places(models.Model):
     id_place = models.AutoField(primary_key=True)
@@ -37,11 +51,19 @@ class Places(models.Model):
     place_department = models.ForeignKey(Departments, on_delete=models.CASCADE, null=False)
     place_point = models.PointField(srid=4326)
 
+    class Meta:
+        verbose_name_plural = 'Ubicaciones'
+        verbose_name = 'Ubicación'
+
 class Routes(models.Model):
     id_route = models.AutoField(primary_key=True)
     origin = models.ForeignKey(Places, on_delete=models.CASCADE, related_name='origin_route', null=False)
     destination = models.ForeignKey(Places, on_delete=models.CASCADE, related_name='destination_route', null=False)
     distance_km = models.IntegerField()
+
+    class Meta:
+        verbose_name_plural = 'Rutas'
+        verbose_name = 'Ruta'
 
 class Trips(models.Model):
     id_trip = models.AutoField(primary_key=True)
@@ -57,6 +79,10 @@ class Trips(models.Model):
     passengers_start = models.IntegerField(default=0)
     trip_state = models.CharField(max_length=20, default='En curso')
 
+    class Meta:
+        verbose_name_plural = 'Viajes'
+        verbose_name = 'Viaje'
+
 class Readings(models.Model):
     id_reading = models.AutoField(primary_key=True)
     id_trip = models.ForeignKey(Trips, on_delete=models.CASCADE, null=False)
@@ -64,6 +90,10 @@ class Readings(models.Model):
     speed = models.IntegerField()
     fuel_level = models.IntegerField()
     reading_point = models.PointField(srid=4326)
+
+    class Meta:
+        verbose_name_plural = 'Lecturas'
+        verbose_name = 'Lectura'
 
 class Seats(models.Model):
     id_seat = models.AutoField(primary_key=True)
@@ -73,6 +103,8 @@ class Seats(models.Model):
     col = models.CharField(max_length=5, null=False)
 
     class Meta:
+        verbose_name_plural = 'Asientos'
+        verbose_name = 'Asiento'
         constraints = [
             models.UniqueConstraint(
                 fields=['id_bus', 'seat_number'],
@@ -130,5 +162,8 @@ class Users(AbstractUser):
     USERNAME_FIELD = 'username'
     REQUIRED_FIELDS = ['identification_number']
 
+    class Meta:
+        verbose_name_plural = 'Usuarios'
+        verbose_name = 'Usuario'
     def __str__(self):
         return f"{self.username} ({self.rol})"
