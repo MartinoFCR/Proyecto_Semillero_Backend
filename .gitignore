@@ -2,3 +2,6 @@
 db.sqlite3
 .requirements.txt
 requirements2.txt
+.env
+.vscode
+.idea
