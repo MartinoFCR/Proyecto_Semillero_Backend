@@ -14,13 +14,13 @@ class Bus(models.Model):
         ordering = ['id']
 
 class Driver(models.Model):
-    fullname = models.CharField(max_length=70, null=False)
+    full_name = models.CharField(max_length=70, null=False)
     user = models.OneToOneField(
         settings.AUTH_USER_MODEL,
         on_delete=models.PROTECT,
         related_name='driver_profile'
     )
-    licence_number = models.CharField(max_length=20, null=False, unique=True)
+    license_number = models.CharField(max_length=20, null=False, unique=True)
     address = models.CharField(max_length=50, null=False)
     phone_number = models.CharField(max_length=20, null=False)
 

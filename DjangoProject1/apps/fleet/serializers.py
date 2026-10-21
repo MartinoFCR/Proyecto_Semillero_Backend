@@ -1,5 +1,6 @@
 from rest_framework import serializers
 
+from DjangoProject1.apps.accounts.models import User
 from DjangoProject1.apps.fleet.models import Bus, Driver, Seat
 
 
@@ -8,11 +9,24 @@ class BusSerializer(serializers.ModelSerializer):
         model = Bus
         fields = "__all__"
 
+    def validate_capacity(self, value):
+        if value <= 0:
+            raise serializers.ValidationError(
+                "La capacidad debe ser mayor que cero."
+            )
+        return value
 
 class DriverSerializer(serializers.ModelSerializer):
     class Meta:
         model = Driver
         fields = "__all__"
+        
+    def validate_user(self, user):
+        if user.role != User.Role.DRIVER:
+            raise serializers.ValidationError(
+                "El usuario debe tener el rol de conductor."
+            )
+        return user
 
 
 class SeatSerializer(serializers.ModelSerializer):

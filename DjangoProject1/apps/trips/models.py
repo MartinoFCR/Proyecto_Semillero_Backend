@@ -16,7 +16,10 @@ class Trip(models.Model):
     driver = models.ForeignKey(Driver, on_delete=models.PROTECT, null=False)
     route = models.ForeignKey(Route, on_delete=models.PROTECT, null=False)
     date_time_start = models.DateTimeField(default=timezone.now)
-    date_time_end = models.DateTimeField()
+    date_time_end = models.DateTimeField(
+        null=True,
+        blank=True
+    )
     fuel_start = models.DecimalField(
         max_digits=5,
         decimal_places=2

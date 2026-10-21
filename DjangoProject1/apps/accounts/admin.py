@@ -1,8 +1,14 @@
 from django.contrib import admin
+from django.contrib.auth.admin import UserAdmin
 
-# Register your models here.
 from .models import User
 
 
-# Register your models here.
-admin.site.register(User)
+@admin.register(User)
+class CustomUserAdmin(UserAdmin):
+    fieldsets = UserAdmin.fieldsets + (
+        ("Información adicional", {"fields": ("telephone", "identification_number", "role")}),
+    )
+    add_fieldsets = UserAdmin.add_fieldsets + (
+        ("Información adicional", {"fields": ("email", "telephone", "identification_number", "role")}),
+    )

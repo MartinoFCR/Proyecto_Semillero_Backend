@@ -4,7 +4,16 @@ from DjangoProject1.apps.accounts.models import User
 
 
 class UserSerializer(serializers.ModelSerializer):
-    password = serializers.CharField(write_only=True, required=False)
+    password = serializers.CharField(
+        write_only=True,
+        required=False,
+        trim_whitespace=False
+    )
+
+    role = serializers.ChoiceField(
+        choices=User.Role.choices,
+        read_only=True
+    )
 
     class Meta:
         model = User
@@ -19,6 +28,7 @@ class UserSerializer(serializers.ModelSerializer):
             "last_name",
             "password",
         )
+        read_only_fields = ("id", "role")
 
     def validate(self, attrs):
         if self.instance is None and not attrs.get("password"):

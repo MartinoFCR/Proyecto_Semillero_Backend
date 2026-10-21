@@ -22,4 +22,4 @@ class User(AbstractUser):
         verbose_name_plural = 'Usuarios'
         verbose_name = 'Usuario'
     def __str__(self):
-        return f"{self.username} ({self.rol})"
+        return f"{self.username} ({self.role})"
