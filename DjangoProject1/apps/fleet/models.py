@@ -3,10 +3,15 @@ from django.conf import settings
 
 # Create your models here.
 class Bus(models.Model):
+    class State(models.TextChoices):
+        ACTIVE = 'Active', 'Activo'
+        INACTIVE = 'Inactive', 'Inactivo'
+        MAINTENANCE = 'Maintenance', 'Mantenimiento'
+        
     plate = models.CharField(max_length=10, null=False, unique=True)
     capacity = models.IntegerField()
     model = models.CharField(max_length=50)
-    state = models.CharField(max_length=20, default='Active')
+    state = models.CharField(max_length=20, choices=State.choices, default=State.ACTIVE)
 
     class Meta:
         verbose_name_plural = 'Buses'
