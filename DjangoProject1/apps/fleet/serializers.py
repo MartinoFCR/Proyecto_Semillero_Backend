@@ -24,7 +24,8 @@ class DriverSerializer(serializers.ModelSerializer):
     def validate_user(self, user):
         if user.role != User.Role.DRIVER:
             raise serializers.ValidationError(
-                "El usuario debe tener el rol de conductor."
+                f"El usuario {user.username} con ID {user.id} debe tener el rol "
+                f"'{User.Role.DRIVER}'. Rol actual: '{user.role}'."
             )
         return user
 

@@ -1,6 +1,9 @@
 from django.urls import include, path
 from rest_framework import routers
 from django.contrib import admin
+from django.urls import path
+from drf_spectacular.views import SpectacularAPIView, SpectacularRedocView, SpectacularSwaggerView
+
 
 from DjangoProject1.apps.accounts import views
 
@@ -12,6 +15,11 @@ from rest_framework_simplejwt.views import (
 
 
 urlpatterns = [
+    path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
+    # Interfaz Swagger UI
+    path('api/schema/swagger-ui/', SpectacularSwaggerView.as_view(url_name='schema'), name='swagger-ui'),
+    # Interfaz ReDoc
+    path('api/schema/redoc/', SpectacularRedocView.as_view(url_name='schema'), name='redoc'),
     path(
         "api/token/",
         TokenObtainPairView.as_view(),
