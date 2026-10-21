@@ -5,13 +5,38 @@ from django.contrib import admin
 from DjangoProject1.apps.accounts import views
 
 router = routers.DefaultRouter()
-router.register(r"users", views.UserViewSet)
-router.register(r"groups", views.GroupViewSet)
+from rest_framework_simplejwt.views import (
+    TokenObtainPairView,
+    TokenRefreshView,
+)
 
-# Wire up our API using automatic URL routing.
-# Additionally, we include login URLs for the browsable API.
+
 urlpatterns = [
-    path("", include(router.urls)),
-    path("api-auth/", include("rest_framework.urls", namespace="rest_framework")),
-    path('admin/', admin.site.urls),
+    path(
+        "api/token/",
+        TokenObtainPairView.as_view(),
+        name="token_obtain_pair",
+    ),
+    path(
+        "api/token/refresh/",
+        TokenRefreshView.as_view(),
+        name="token_refresh",
+    ),
+    path("admin/", admin.site.urls),
+
+    path("api/accounts/", include(
+        "DjangoProject1.apps.accounts.urls"
+    )),
+    path("api/fleet/", include(
+        "DjangoProject1.apps.fleet.urls"
+    )),
+    path("api/geography/", include(
+        "DjangoProject1.apps.geography.urls"
+    )),
+    path("api/routes/", include(
+        "DjangoProject1.apps.routes.urls"
+    )),
+    path("api/trips/", include(
+        "DjangoProject1.apps.trips.urls"
+    )),
 ]

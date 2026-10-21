@@ -1,25 +1,16 @@
-from django.shortcuts import render
+from rest_framework.viewsets import ModelViewSet
 
-# Create your views here.
 from DjangoProject1.apps.accounts.models import User
-from DjangoProject1.apps.fleet.models import Bus, Driver, Seat
-from django.contrib.auth.models import Group
-from rest_framework import permissions, viewsets
+from DjangoProject1.apps.accounts.serializers import UserSerializer
+from DjangoProject1.permissions import IsAdminRole
 
 
-class UserViewSet(viewsets.ModelViewSet):
-    """
-    API endpoint that allows users to be viewed or edited.
-    """
+class UserViewSet(ModelViewSet):
+    queryset = User.objects.all().order_by("id")
+    serializer_class = UserSerializer
+    permission_classes = [IsAdminRole]
+    http_method_names = ["get", "post", "put", "patch", "head", "options"]
 
-    queryset = User.objects.all().order_by("-date_joined")
-    permission_classes = [permissions.IsAuthenticated]
-
-
-class GroupViewSet(viewsets.ModelViewSet):
-    """
-    API endpoint that allows groups to be viewed or edited.
-    """
-
-    queryset = Group.objects.all().order_by("name")
-    permission_classes = [permissions.IsAuthenticated]
+    def perform_create(self, serializer):
+        # El rol no se acepta desde el serializer público.
+        serializer.save()

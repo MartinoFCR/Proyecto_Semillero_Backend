@@ -54,3 +54,31 @@ class IsAdminOrAssignedDriver(BasePermission):
             hasattr(trip, "driver_id")
             and trip.driver_id == driver_profile.pk
         )
+
+
+class IsAdminOrAssignedDriverReadOnly(BasePermission):
+    """
+    El administrador puede gestionar viajes.
+    El conductor asignado solo puede consultarlos.
+    """
+
+    def has_permission(self, request, view):
+        return bool(
+            request.user and request.user.is_authenticated
+        )
+
+    def has_object_permission(self, request, view, obj):
+        if request.user.role == "admin":
+            return True
+
+        if request.method not in SAFE_METHODS:
+            return False
+
+        driver_profile = getattr(
+            request.user, "driver_profile", None
+        )
+
+        return bool(
+            driver_profile
+            and obj.driver_id == driver_profile.pk
+        )
