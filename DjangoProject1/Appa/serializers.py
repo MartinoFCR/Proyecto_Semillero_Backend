@@ -1,12 +1,12 @@
 from rest_framework import serializers
 
-from DjangoProject1.Appa.models import Users, Trips
+from DjangoProject1.Appa.models import User, Trip
 
 
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
-        model = Users
+        model = User
 
 class TripSerializer(serializers.ModelSerializer):
     class Meta:
-        model = Trips
+        model = Trip

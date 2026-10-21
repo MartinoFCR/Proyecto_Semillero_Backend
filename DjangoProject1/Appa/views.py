@@ -2,8 +2,8 @@
 from rest_framework import generics
 from rest_framework.permissions import IsAdminUser
 
-from DjangoProject1.Appa.models import Users
-from django.contrib.auth.models import Group, User
+from DjangoProject1.Appa.models import User
+from django.contrib.auth.models import Group
 from rest_framework import permissions, viewsets
 
 
@@ -12,7 +12,7 @@ class UserViewSet(viewsets.ModelViewSet):
     API endpoint that allows users to be viewed or edited.
     """
 
-    queryset = Users.objects.all().order_by("-date_joined")
+    queryset = User.objects.all().order_by("-date_joined")
     permission_classes = [permissions.IsAuthenticated]
 
 

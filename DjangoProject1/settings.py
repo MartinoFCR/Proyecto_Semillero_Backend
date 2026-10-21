@@ -88,7 +88,7 @@ DATABASES = {
 
 
 
-AUTH_USER_MODEL = 'Appa.Users'
+AUTH_USER_MODEL = 'Appa.User'
 
 # Password validation
 # https://docs.djangoproject.com/en/6.0/ref/settings/#auth-password-validators
@@ -108,6 +108,7 @@ AUTH_PASSWORD_VALIDATORS = [
     },
 ]
 
+DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # Internationalization
 # https://docs.djangoproject.com/en/6.0/topics/i18n/
