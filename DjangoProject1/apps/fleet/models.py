@@ -1,4 +1,5 @@
 from django.db import models
+from django.conf import settings
 
 # Create your models here.
 class Bus(models.Model):
@@ -15,7 +16,7 @@ class Bus(models.Model):
 class Driver(models.Model):
     fullname = models.CharField(max_length=70, null=False)
     user = models.OneToOneField(
-        'User',
+        settings.AUTH_USER_MODEL,
         on_delete=models.PROTECT,
         related_name='driver_profile'
     )

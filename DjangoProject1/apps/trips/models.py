@@ -1,4 +1,4 @@
-from django.db import models
+from django.contrib.gis.db import models
 from django.utils import timezone
 from DjangoProject1.apps.routes.models import Route
 from DjangoProject1.apps.fleet.models import Bus, Driver, Seat
@@ -96,7 +96,7 @@ class CurrentSeatState(models.Model):
     class Meta:
         constraints = [
             models.UniqueConstraint(
-                fields=['rip', 'seat'],
+                fields=['trip', 'seat'],
                 name='unique_seat_actual_state'
             )
         ]

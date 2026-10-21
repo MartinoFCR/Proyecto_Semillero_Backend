@@ -37,7 +37,12 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'corsheaders',
-    'DjangoProject1.Appa',
+    
+    'DjangoProject1.apps.accounts',
+    'DjangoProject1.apps.fleet',
+    'DjangoProject1.apps.routes',
+    'DjangoProject1.apps.trips',
+    'DjangoProject1.apps.geography',
 ]
 
 MIDDLEWARE = [
@@ -88,7 +93,7 @@ DATABASES = {
 
 
 
-AUTH_USER_MODEL = 'Appa.User'
+AUTH_USER_MODEL = 'accounts.User'
 
 # Password validation
 # https://docs.djangoproject.com/en/6.0/ref/settings/#auth-password-validators
