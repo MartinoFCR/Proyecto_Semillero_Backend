@@ -286,6 +286,40 @@ El frontend debe usar `public_key` y `signature_integrity` con el Widget de
 Wompi. Los datos de tarjeta no deben pasar por el backend ni guardarse en la
 base de datos.
 
+Las compras online reservan la silla durante 5 minutos. Si el pago no se
+confirma dentro de ese plazo, la venta queda `expired` y la silla vuelve a
+estar disponible. Una venta administrativa recibe `409 Conflict` mientras
+exista una reserva online vigente.
+
+## Facturación electrónica con Factus
+
+Las ventas pagadas crean una factura Factus asociada a la venta. La factura
+no bloquea la venta ni la emisión del tiquete: si faltan datos fiscales o
+Factus no responde, queda en estado `error` para reintentar posteriormente.
+
+Variables adicionales requeridas:
+
+```env
+FACTUS_BASE_URL=https://api-sandbox.factus.com.co
+FACTUS_USERNAME=...
+FACTUS_PASSWORD=...
+FACTUS_CLIENT_ID=...
+FACTUS_CLIENT_SECRET=...
+FACTUS_NUMBERING_RANGE_ID=...
+FACTUS_PRODUCT_CODE=...
+FACTUS_PRODUCT_NAME=...
+FACTUS_MUNICIPALITY_CODE=...
+```
+
+El reintento administrativo se realiza con:
+
+```text
+POST /api/sales/factus/invoices/<sale_id>/retry/
+```
+
+El CUFE, número, XML y PDF deben ser suministrados por Factus; el backend no
+los inventa.
+
 ### Confirmación temporal sin webhook
 
 Mientras no se pueda configurar el webhook en el panel de Wompi, el frontend

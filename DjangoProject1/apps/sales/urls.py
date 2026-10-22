@@ -3,6 +3,7 @@ from django.urls import path
 
 from .views import (
     AdminSaleView,
+    FactusInvoiceRetryView,
     SaleViewSet,
     TicketViewSet,
     WompiCheckoutView,
@@ -16,6 +17,11 @@ router.register("tickets", TicketViewSet, basename="ticket")
 
 urlpatterns = router.urls + [
     path("admin-sales/", AdminSaleView.as_view(), name="admin-sale"),
+    path(
+        "factus/invoices/<int:sale_id>/retry/",
+        FactusInvoiceRetryView.as_view(),
+        name="factus-invoice-retry",
+    ),
     path("wompi/checkout/", WompiCheckoutView.as_view(), name="wompi-checkout"),
     path(
         "wompi/status/",

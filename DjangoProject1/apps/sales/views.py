@@ -1,8 +1,10 @@
 import os
+from datetime import timedelta
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ObjectDoesNotExist
 from django.db import transaction
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
@@ -13,10 +15,15 @@ from DjangoProject1.apps.fleet.models import Seat
 from DjangoProject1.apps.trips.models import Trip
 from .models import Payment, Sale, Ticket
 from .permissions import IsAdminOrSaleOwner
-from .serializers import SaleSerializer, TicketSerializer
+from .serializers import (
+    FactusInvoiceSerializer,
+    SaleSerializer,
+    TicketSerializer,
+)
 from .services import (
     create_ticket_for_sale,
     get_wompi_transaction,
+    issue_factus_invoice,
     mark_sale_paid,
     validate_wompi_event_signature,
     wompi_integrity_signature,
@@ -96,8 +103,24 @@ class AdminSaleView(APIView):
                 trip = Trip.objects.select_related("bus", "fare").get(
                     pk=request.data["trip"]
                 )
-                seat = trip.bus.seats.get(pk=request.data["seat"])
+                seat = trip.bus.seats.select_for_update().get(
+                    pk=request.data["seat"]
+                )
                 amount_cents = trip.fare.amount_cents
+                active_hold = Sale.objects.filter(
+                    trip=trip,
+                    seat=seat,
+                    source=Sale.Source.ONLINE,
+                    status=Sale.Status.PENDING,
+                ).first()
+                if active_hold:
+                    if active_hold.has_active_hold():
+                        return Response(
+                            {"detail": "La silla está reservada temporalmente."},
+                            status=status.HTTP_409_CONFLICT,
+                        )
+                    active_hold.status = Sale.Status.EXPIRED
+                    active_hold.save(update_fields=["status", "updated_at"])
             except (
                 Seat.DoesNotExist,
                 Trip.DoesNotExist,
@@ -135,7 +158,29 @@ class AdminSaleView(APIView):
                     "telephone": request.data["telephone"],
                 },
             )
+            transaction.on_commit(
+                lambda sale_id=sale.pk: issue_factus_invoice(sale_id)
+            )
         return Response(SaleSerializer(sale).data, status=status.HTTP_201_CREATED)
+
+
+class FactusInvoiceRetryView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, sale_id):
+        if request.user.role != "admin":
+            return Response(
+                {"detail": "Solo un administrador puede reintentar facturas."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        try:
+            invoice = issue_factus_invoice(sale_id)
+        except Sale.DoesNotExist:
+            return Response(
+                {"detail": "La venta no existe."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        return Response(FactusInvoiceSerializer(invoice).data)
 
 
 class WompiCheckoutView(APIView):
@@ -169,19 +214,36 @@ class WompiCheckoutView(APIView):
                 {"detail": "La silla ya está vendida para este viaje."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        sale = Sale.objects.create(
-            buyer=request.user,
-            created_by=request.user,
-            source=Sale.Source.ONLINE,
-            payment_method=Sale.PaymentMethod.WOMPI,
-            amount_cents=amount_cents,
-            trip=trip,
-            seat=seat,
-            passenger_identification=request.user.identification_number,
-            passenger_name=f"{request.user.first_name} {request.user.last_name}".strip(),
-            passenger_email=request.user.email,
-            passenger_telephone=request.user.telephone or "",
-        )
+        with transaction.atomic():
+            seat = trip.bus.seats.select_for_update().get(pk=seat.pk)
+            active_hold = Sale.objects.filter(
+                trip=trip,
+                seat=seat,
+                source=Sale.Source.ONLINE,
+                status=Sale.Status.PENDING,
+            ).first()
+            if active_hold:
+                if active_hold.has_active_hold():
+                    return Response(
+                        {"detail": "La silla está reservada temporalmente."},
+                        status=status.HTTP_409_CONFLICT,
+                    )
+                active_hold.status = Sale.Status.EXPIRED
+                active_hold.save(update_fields=["status", "updated_at"])
+            sale = Sale.objects.create(
+                buyer=request.user,
+                created_by=request.user,
+                source=Sale.Source.ONLINE,
+                payment_method=Sale.PaymentMethod.WOMPI,
+                amount_cents=amount_cents,
+                trip=trip,
+                seat=seat,
+                passenger_identification=request.user.identification_number,
+                passenger_name=f"{request.user.first_name} {request.user.last_name}".strip(),
+                passenger_email=request.user.email,
+                passenger_telephone=request.user.telephone or "",
+                expires_at=timezone.now() + timedelta(minutes=5),
+            )
         reference = f"sale-{sale.pk}"
         Payment.objects.create(
             sale=sale,
@@ -245,6 +307,20 @@ class WompiTransactionStatusView(APIView):
                 {"detail": "La venta no existe."},
                 status=status.HTTP_404_NOT_FOUND,
             )
+
+        if (
+            sale.status == Sale.Status.PENDING
+            and sale.expires_at
+            and sale.expires_at <= timezone.now()
+        ):
+            sale.status = Sale.Status.EXPIRED
+            sale.save(update_fields=["status", "updated_at"])
+            return Response({
+                "sale_id": sale.id,
+                "sale_status": sale.status,
+                "transaction_status": "EXPIRED",
+                "tickets": [],
+            })
 
         if (
             request.user.role != "admin"
