@@ -9,9 +9,14 @@ from DjangoProject1.apps.accounts import views
 
 router = routers.DefaultRouter()
 from rest_framework_simplejwt.views import (
-    TokenObtainPairView,
     TokenRefreshView,
 )
+from DjangoProject1.apps.accounts.tokens import IdentifierTokenSerializer
+from rest_framework_simplejwt.views import TokenViewBase
+
+
+class IdentifierTokenView(TokenViewBase):
+    serializer_class = IdentifierTokenSerializer
 
 
 urlpatterns = [
@@ -22,7 +27,7 @@ urlpatterns = [
     path('api/schema/redoc/', SpectacularRedocView.as_view(url_name='schema'), name='redoc'),
     path(
         "api/token/",
-        TokenObtainPairView.as_view(),
+        IdentifierTokenView.as_view(),
         name="token_obtain_pair",
     ),
     path(

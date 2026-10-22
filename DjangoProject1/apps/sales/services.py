@@ -9,7 +9,7 @@ from django.db import transaction
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
-from .models import FactusInvoice, Payment, Sale, Ticket
+from .models import FactusInvoice, Payment, Purchase, Sale, Ticket
 
 
 def create_ticket_for_sale(sale, trip, seat, passenger):
@@ -83,6 +83,52 @@ def mark_sale_paid(sale, payment_status, provider_reference, raw_response):
             lambda sale_id=sale.pk: issue_factus_invoice(sale_id)
         )
         return sale
+
+
+def mark_purchase_paid(purchase, payment_status, raw_response):
+    with transaction.atomic():
+        purchase = Purchase.objects.select_for_update().get(pk=purchase.pk)
+        if purchase.status == Sale.Status.PAID:
+            return purchase
+        if purchase.status == Sale.Status.PENDING and not purchase.has_active_hold():
+            purchase.status = Sale.Status.EXPIRED
+            purchase.save(update_fields=["status", "updated_at"])
+            return purchase
+        payment, _ = Payment.objects.select_for_update().get_or_create(
+            purchase=purchase,
+            defaults={
+                "amount_cents": purchase.amount_cents,
+                "provider": "wompi",
+            },
+        )
+        payment.status = payment_status
+        payment.raw_response = raw_response
+        payment.processed_at = timezone.now()
+        payment.save(update_fields=["status", "raw_response", "processed_at"])
+        if payment_status != "APPROVED":
+            purchase.status = Sale.Status.FAILED
+            purchase.save(update_fields=["status", "updated_at"])
+            return purchase
+        purchase.status = Sale.Status.PAID
+        purchase.save(update_fields=["status", "updated_at"])
+        for sale in purchase.sales.select_related("trip", "seat").all():
+            create_ticket_for_sale(
+                sale,
+                sale.trip,
+                sale.seat,
+                {
+                    "identification_number": sale.passenger_identification,
+                    "name": sale.passenger_name,
+                    "email": sale.passenger_email,
+                    "telephone": sale.passenger_telephone,
+                },
+            )
+            sale.status = Sale.Status.PAID
+            sale.save(update_fields=["status", "updated_at"])
+            transaction.on_commit(
+                lambda sale_id=sale.pk: issue_factus_invoice(sale_id)
+            )
+        return purchase
 
 
 def get_wompi_transaction(transaction_id):

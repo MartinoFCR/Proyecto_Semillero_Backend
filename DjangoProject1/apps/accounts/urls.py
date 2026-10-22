@@ -5,6 +5,8 @@ from DjangoProject1.apps.accounts.views import (
     CustomerDetailView,
     CustomerListCreateView,
     CustomerSearchView,
+    ProfileView,
+    PublicRegistrationView,
     UserViewSet,
 )
 
@@ -12,6 +14,8 @@ router = DefaultRouter()
 router.register("users", UserViewSet, basename="user")
 
 urlpatterns = router.urls + [
+    path("register/", PublicRegistrationView.as_view(), name="register"),
+    path("me/", ProfileView.as_view(), name="profile"),
     path(
         "customers/search/",
         CustomerSearchView.as_view(),

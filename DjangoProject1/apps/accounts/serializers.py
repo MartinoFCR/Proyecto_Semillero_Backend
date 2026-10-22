@@ -45,10 +45,13 @@ class UserSerializer(serializers.ModelSerializer):
     def validate_username(self, value):
         value = value.strip()
         
-        if self.instance is None and not value.get("username"):
+        if self.instance is None and not value:
             raise serializers.ValidationError({"username": "Este campo es obligatorio."})
         
-        if User.objects.filter(username__iexact=value).exists():
+        queryset = User.objects.filter(username__iexact=value)
+        if self.instance:
+            queryset = queryset.exclude(pk=self.instance.pk)
+        if queryset.exists():
             raise serializers.ValidationError(
                 "Este nombre de usuario ya está registrado."
             )
@@ -62,7 +65,10 @@ class UserSerializer(serializers.ModelSerializer):
                 "El correo electrónico es obligatorio."
             )
 
-        if User.objects.filter(email__iexact=value).exists():
+        queryset = User.objects.filter(email__iexact=value)
+        if self.instance:
+            queryset = queryset.exclude(pk=self.instance.pk)
+        if queryset.exists():
             raise serializers.ValidationError(
                 "Este correo electrónico ya está registrado."
             )
@@ -90,9 +96,12 @@ class UserSerializer(serializers.ModelSerializer):
                 "La identificación contiene caracteres no permitidos."
             )
 
-        if User.objects.filter(
+        queryset = User.objects.filter(
             identification_number__iexact=value
-        ).exists():
+        )
+        if self.instance:
+            queryset = queryset.exclude(pk=self.instance.pk)
+        if queryset.exists():
             raise serializers.ValidationError(
                 "Este número de identificación ya está registrado."
             )
@@ -251,7 +260,7 @@ class CustomerSerializer(serializers.ModelSerializer):
         )
         validated_data["role"] = User.Role.CLIENT
         user = User(**validated_data)
-        user.set_unusable_password()
+        user.set_password(validated_data["identification_number"])
         user.save()
         return user
 
@@ -272,3 +281,80 @@ class CustomerSerializer(serializers.ModelSerializer):
             part for part in (instance.first_name, instance.last_name) if part
         )
         return data
+
+
+class PublicRegistrationSerializer(serializers.ModelSerializer):
+    name = serializers.CharField(write_only=True, max_length=150)
+    password = serializers.CharField(write_only=True, min_length=8)
+
+    class Meta:
+        model = User
+        fields = (
+            "id",
+            "identification_document_code",
+            "identification_number",
+            "name",
+            "email",
+            "telephone",
+            "password",
+        )
+        read_only_fields = ("id",)
+
+    def validate_name(self, value):
+        value = " ".join(value.strip().split())
+        if not value:
+            raise serializers.ValidationError("El nombre es obligatorio.")
+        return value
+
+    def validate_email(self, value):
+        value = value.strip().lower()
+        if User.objects.filter(email__iexact=value).exists():
+            raise serializers.ValidationError("El correo ya está registrado.")
+        return value
+
+    def validate_identification_number(self, value):
+        value = value.strip()
+        if User.objects.filter(
+            identification_number__iexact=value
+        ).exists():
+            raise serializers.ValidationError(
+                "El documento ya está registrado."
+            )
+        return value
+
+    def create(self, validated_data):
+        name = validated_data.pop("name")
+        password = validated_data.pop("password")
+        first_name, *last_name = name.split(" ", 1)
+        identification_number = validated_data["identification_number"]
+        user = User(
+            username="customer_" + identification_number,
+            first_name=first_name,
+            last_name=last_name[0] if last_name else "",
+            role=User.Role.CLIENT,
+            **validated_data,
+        )
+        user.set_password(password)
+        user.save()
+        return user
+
+
+class ProfileSerializer(serializers.ModelSerializer):
+    name = serializers.CharField(source="first_name", max_length=150)
+
+    class Meta:
+        model = User
+        fields = (
+            "id",
+            "identification_document_code",
+            "identification_number",
+            "name",
+            "last_name",
+            "email",
+            "telephone",
+        )
+        read_only_fields = (
+            "id",
+            "identification_document_code",
+            "identification_number",
+        )

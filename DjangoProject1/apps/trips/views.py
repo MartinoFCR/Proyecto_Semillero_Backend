@@ -1,8 +1,12 @@
 
 from rest_framework import status
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
+from rest_framework.views import APIView
 from rest_framework.viewsets import ModelViewSet, ReadOnlyModelViewSet
+from django.utils import timezone
+from DjangoProject1.apps.sales.models import Sale, Ticket
 
 from DjangoProject1.apps.trips.models import (
     Trip,
@@ -35,6 +39,8 @@ class TripViewSet(ModelViewSet):
     def get_permissions(self):
         if self.request.method in {"POST", "PUT", "PATCH", "DELETE"}:
             return [IsAdminRole()]
+        if getattr(self.request.user, "role", None) == "client":
+            return [IsAuthenticated()]
         return super().get_permissions()
 
     def get_queryset(self):
@@ -49,6 +55,11 @@ class TripViewSet(ModelViewSet):
 
         if self.request.user.role == "admin":
             return queryset.all()
+
+        if self.request.user.role == "client":
+            return queryset.filter(
+                trip_state=Trip.TripState.SCHEDULED,
+            )
 
         driver_profile = getattr(
             self.request.user,
@@ -66,6 +77,67 @@ class TripFareViewSet(ModelViewSet):
     queryset = TripFare.objects.select_related("trip").all()
     serializer_class = TripFareSerializer
     permission_classes = [IsAdminOrReadOnly]
+
+
+class AvailableSeatsView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, trip_id):
+        try:
+            trip = Trip.objects.select_related("bus").get(
+                pk=trip_id,
+                trip_state=Trip.TripState.SCHEDULED,
+            )
+        except Trip.DoesNotExist:
+            return Response(
+                {"detail": "Viaje no encontrado o no disponible."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        issued_seats = set(
+            Ticket.objects.filter(
+                trip=trip,
+                status=Ticket.Status.ISSUED,
+            ).values_list("seat_id", flat=True)
+        )
+        held_seats = set(
+            Sale.objects.filter(
+                trip=trip,
+                source=Sale.Source.ONLINE,
+                status=Sale.Status.PENDING,
+            ).values_list("seat_id", flat=True)
+        )
+        now = timezone.now()
+        expired_holds = Sale.objects.filter(
+            trip=trip,
+            source=Sale.Source.ONLINE,
+            status=Sale.Status.PENDING,
+            expires_at__lte=now,
+        )
+        expired_holds.update(
+            status=Sale.Status.EXPIRED,
+            updated_at=now,
+        )
+
+        seats = []
+        for seat in trip.bus.seats.all().order_by("seat_number"):
+            if seat.id in issued_seats:
+                state = "sold"
+            elif seat.id in held_seats:
+                state = "reserved"
+            else:
+                state = "available"
+            seats.append({
+                "id": seat.id,
+                "seat_number": seat.seat_number,
+                "row": seat.row,
+                "col": seat.col,
+                "status": state,
+            })
+        return Response({
+            "trip": trip.id,
+            "seats": seats,
+        })
 
 
 class ReadingViewSet(ModelViewSet):

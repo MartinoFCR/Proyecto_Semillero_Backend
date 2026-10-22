@@ -1,4 +1,5 @@
 import os
+import uuid
 from datetime import timedelta
 
 from django.contrib.auth import get_user_model
@@ -13,7 +14,7 @@ from rest_framework.viewsets import ReadOnlyModelViewSet
 
 from DjangoProject1.apps.fleet.models import Seat
 from DjangoProject1.apps.trips.models import Trip
-from .models import Payment, Sale, Ticket
+from .models import Payment, Purchase, Sale, Ticket
 from .permissions import IsAdminOrSaleOwner
 from .serializers import (
     FactusInvoiceSerializer,
@@ -25,6 +26,7 @@ from .services import (
     get_wompi_transaction,
     issue_factus_invoice,
     mark_sale_paid,
+    mark_purchase_paid,
     validate_wompi_event_signature,
     wompi_integrity_signature,
 )
@@ -262,6 +264,109 @@ class WompiCheckoutView(APIView):
         }, status=status.HTTP_201_CREATED)
 
 
+class WompiMultiCheckoutView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        passengers = request.data.get("passengers")
+        if not isinstance(passengers, list) or not passengers:
+            return Response(
+                {"passengers": "Debe incluir al menos un pasajero."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            trip = Trip.objects.select_related("bus", "fare").get(
+                pk=request.data["trip"],
+                trip_state=Trip.TripState.SCHEDULED,
+            )
+            amount_cents = trip.fare.amount_cents
+            seat_ids = [item["seat"] for item in passengers]
+            if len(seat_ids) != len(set(seat_ids)):
+                raise ValueError("No puede repetir sillas.")
+            seats = list(
+                trip.bus.seats.select_for_update().filter(id__in=seat_ids)
+            )
+            if len(seats) != len(seat_ids):
+                raise ValueError("Una silla no pertenece al viaje.")
+        except (KeyError, ValueError, TypeError, Trip.DoesNotExist,
+                ObjectDoesNotExist):
+            return Response(
+                {"detail": "El viaje o los pasajeros no son válidos."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        with transaction.atomic():
+            locked = list(
+                trip.bus.seats.select_for_update().filter(id__in=seat_ids)
+            )
+            sold = set(Ticket.objects.filter(
+                trip=trip, seat_id__in=seat_ids,
+                status=Ticket.Status.ISSUED,
+            ).values_list("seat_id", flat=True))
+            held = Sale.objects.filter(
+                trip=trip, seat_id__in=seat_ids,
+                source=Sale.Source.ONLINE, status=Sale.Status.PENDING,
+                expires_at__gt=timezone.now(),
+            ).values_list("seat_id", flat=True)
+            unavailable = sold | set(held)
+            if unavailable:
+                return Response(
+                    {"detail": "Una o más sillas no están disponibles.",
+                     "seat_ids": list(unavailable)},
+                    status=status.HTTP_409_CONFLICT,
+                )
+            purchase = Purchase.objects.create(
+                buyer=request.user,
+                trip=trip,
+                amount_cents=amount_cents * len(passengers),
+                reference=f"purchase-{uuid.uuid4().hex}",
+                expires_at=timezone.now() + timedelta(minutes=5),
+            )
+            seat_map = {seat.id: seat for seat in locked}
+            for passenger in passengers:
+                required = ("seat", "name", "identification_number", "email")
+                if any(field not in passenger for field in required):
+                    transaction.set_rollback(True)
+                    return Response(
+                        {"detail": "Faltan datos de pasajero."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                Sale.objects.create(
+                    purchase=purchase,
+                    buyer=request.user,
+                    created_by=request.user,
+                    source=Sale.Source.ONLINE,
+                    payment_method=Sale.PaymentMethod.WOMPI,
+                    amount_cents=amount_cents,
+                    trip=trip,
+                    seat=seat_map[passenger["seat"]],
+                    passenger_identification=passenger["identification_number"],
+                    passenger_name=passenger["name"],
+                    passenger_email=passenger["email"],
+                    passenger_telephone=passenger.get("telephone", ""),
+                    expires_at=purchase.expires_at,
+                )
+            Payment.objects.create(
+                purchase=purchase,
+                provider="wompi",
+                provider_reference=purchase.reference,
+                amount_cents=purchase.amount_cents,
+            )
+        return Response({
+            "purchase_id": purchase.id,
+            "sale_ids": list(purchase.sales.values_list("id", flat=True)),
+            "reference": purchase.reference,
+            "expires_at": purchase.expires_at,
+            "public_key": os.getenv("WOMPI_PUBLIC_KEY", ""),
+            "currency": "COP",
+            "amount_in_cents": purchase.amount_cents,
+            "signature_integrity": wompi_integrity_signature(
+                purchase.reference, purchase.amount_cents
+            ),
+            "redirect_url": request.data.get("redirect_url", ""),
+        }, status=status.HTTP_201_CREATED)
+
+
 class WompiWebhookView(APIView):
     permission_classes = [AllowAny]
 
@@ -272,19 +377,32 @@ class WompiWebhookView(APIView):
         reference = transaction_data.get("reference", "")
         try:
             sale = Sale.objects.get(payment__provider_reference=reference)
+            purchase = None
         except Sale.DoesNotExist:
-            return Response({"detail": "Venta no encontrada."}, status=404)
+            try:
+                purchase = Purchase.objects.get(reference=reference)
+                sale = None
+            except Purchase.DoesNotExist:
+                return Response({"detail": "Compra no encontrada."}, status=404)
+        expected_amount = purchase.amount_cents if purchase else sale.amount_cents
         if (
-            transaction_data.get("amount_in_cents") != sale.amount_cents
+            transaction_data.get("amount_in_cents") != expected_amount
             or transaction_data.get("currency") != "COP"
         ):
             return Response({"detail": "El valor del pago no coincide."}, status=400)
-        mark_sale_paid(
-            sale,
-            transaction_data.get("status", "ERROR"),
-            None,
-            request.data,
-        )
+        if purchase:
+            mark_purchase_paid(
+                purchase,
+                transaction_data.get("status", "ERROR"),
+                request.data,
+            )
+        else:
+            mark_sale_paid(
+                sale,
+                transaction_data.get("status", "ERROR"),
+                None,
+                request.data,
+            )
         return Response({"detail": "Evento procesado."})
 
 
@@ -293,26 +411,67 @@ class WompiTransactionStatusView(APIView):
 
     def post(self, request):
         sale_id = request.data.get("sale_id")
+        purchase_id = request.data.get("purchase_id")
         transaction_id = request.data.get("transaction_id")
-        if not sale_id or not transaction_id:
+        if (not sale_id and not purchase_id) or not transaction_id:
             return Response(
-                {"detail": "sale_id y transaction_id son obligatorios."},
+                {
+                    "detail": (
+                        "sale_id o purchase_id y transaction_id "
+                        "son obligatorios."
+                    )
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        try:
-            sale = Sale.objects.select_related("buyer").get(pk=sale_id)
-        except (Sale.DoesNotExist, ValueError, TypeError):
+        if purchase_id:
+            try:
+                purchase = Purchase.objects.select_related("buyer").get(
+                    pk=purchase_id
+                )
+                sale = None
+            except (Purchase.DoesNotExist, ValueError, TypeError):
+                return Response(
+                    {"detail": "La compra no existe."},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+        else:
+            try:
+                sale = Sale.objects.select_related("buyer").get(pk=sale_id)
+                purchase = None
+            except (Sale.DoesNotExist, ValueError, TypeError):
+                return Response(
+                    {"detail": "La venta no existe."},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+
+        owner = purchase.buyer_id if purchase else sale.buyer_id
+        if request.user.role != "admin" and owner != request.user.id:
             return Response(
-                {"detail": "La venta no existe."},
-                status=status.HTTP_404_NOT_FOUND,
+                {"detail": "No puedes consultar esta compra."},
+                status=status.HTTP_403_FORBIDDEN,
             )
 
-        if (
-            sale.status == Sale.Status.PENDING
-            and sale.expires_at
-            and sale.expires_at <= timezone.now()
-        ):
+        if purchase:
+            if (
+                purchase.status == Sale.Status.PENDING
+                and not purchase.has_active_hold()
+            ):
+                purchase.status = Sale.Status.EXPIRED
+                purchase.save(update_fields=["status", "updated_at"])
+                return Response({
+                    "purchase_id": purchase.id,
+                    "sale_status": purchase.status,
+                    "transaction_status": "EXPIRED",
+                    "tickets": [],
+                })
+            reference = purchase.reference
+            amount_cents = purchase.amount_cents
+        else:
+            reference = sale.payment.provider_reference
+            amount_cents = sale.amount_cents
+
+        if sale and sale.status == Sale.Status.PENDING and sale.expires_at and sale.expires_at <= timezone.now():
             sale.status = Sale.Status.EXPIRED
             sale.save(update_fields=["status", "updated_at"])
             return Response({
@@ -322,21 +481,12 @@ class WompiTransactionStatusView(APIView):
                 "tickets": [],
             })
 
-        if (
-            request.user.role != "admin"
-            and sale.buyer_id != request.user.id
-        ):
-            return Response(
-                {"detail": "No puedes consultar esta venta."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-
         wompi_response = get_wompi_transaction(transaction_id)
         transaction_data = wompi_response.get("data", {})
         if (
             transaction_data.get("reference")
-            != sale.payment.provider_reference
-            or transaction_data.get("amount_in_cents") != sale.amount_cents
+            != reference
+            or transaction_data.get("amount_in_cents") != amount_cents
             or transaction_data.get("currency") != "COP"
         ):
             return Response(
@@ -346,13 +496,29 @@ class WompiTransactionStatusView(APIView):
 
         transaction_status = transaction_data.get("status", "ERROR")
         if transaction_status in {"APPROVED", "DECLINED", "ERROR"}:
-            mark_sale_paid(
-                sale,
-                transaction_status,
-                None,
-                wompi_response,
-            )
+            if purchase:
+                mark_purchase_paid(
+                    purchase,
+                    transaction_status,
+                    wompi_response,
+                )
+            else:
+                mark_sale_paid(
+                    sale,
+                    transaction_status,
+                    None,
+                    wompi_response,
+                )
 
+        if purchase:
+            purchase.refresh_from_db()
+            tickets = Ticket.objects.filter(sale__purchase=purchase)
+            return Response({
+                "purchase_id": purchase.id,
+                "sale_status": purchase.status,
+                "transaction_status": transaction_status,
+                "tickets": TicketSerializer(tickets, many=True).data,
+            })
         sale.refresh_from_db()
         return Response({
             "sale_id": sale.id,

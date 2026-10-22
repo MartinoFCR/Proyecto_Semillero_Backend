@@ -2,10 +2,13 @@ from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.views import APIView
 from rest_framework.viewsets import ModelViewSet
+from rest_framework.permissions import AllowAny, IsAuthenticated
 
 from DjangoProject1.apps.accounts.models import User
 from DjangoProject1.apps.accounts.serializers import (
     CustomerSerializer,
+    ProfileSerializer,
+    PublicRegistrationSerializer,
     UserSerializer,
 )
 from DjangoProject1.permissions import IsAdminRole
@@ -98,3 +101,31 @@ class CustomerDetailView(APIView):
         )
         serializer.is_valid(raise_exception=True)
         return Response(CustomerSerializer(serializer.save()).data)
+
+
+class PublicRegistrationView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = PublicRegistrationSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        return Response(
+            ProfileSerializer(serializer.save()).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class ProfileView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        return Response(ProfileSerializer(request.user).data)
+
+    def patch(self, request):
+        serializer = ProfileSerializer(
+            request.user,
+            data=request.data,
+            partial=True,
+        )
+        serializer.is_valid(raise_exception=True)
+        return Response(ProfileSerializer(serializer.save()).data)

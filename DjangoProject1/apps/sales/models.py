@@ -31,6 +31,13 @@ class Sale(models.Model):
         on_delete=models.PROTECT,
         related_name="sales",
     )
+    purchase = models.ForeignKey(
+        "Purchase",
+        on_delete=models.PROTECT,
+        related_name="sales",
+        null=True,
+        blank=True,
+    )
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.PROTECT,
@@ -66,11 +73,44 @@ class Sale(models.Model):
         )
 
 
+class Purchase(models.Model):
+    buyer = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="purchases",
+    )
+    trip = models.ForeignKey(Trip, on_delete=models.PROTECT)
+    amount_cents = models.PositiveIntegerField()
+    status = models.CharField(
+        max_length=20,
+        choices=Sale.Status.choices,
+        default=Sale.Status.PENDING,
+    )
+    reference = models.CharField(max_length=120, unique=True)
+    expires_at = models.DateTimeField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def has_active_hold(self):
+        return (
+            self.status == Sale.Status.PENDING
+            and self.expires_at is not None
+            and self.expires_at > timezone.now()
+        )
+
+
 class Payment(models.Model):
     sale = models.OneToOneField(
         Sale,
         on_delete=models.PROTECT,
         related_name="payment",
+    )
+    purchase = models.OneToOneField(
+        Purchase,
+        on_delete=models.PROTECT,
+        related_name="payment",
+        null=True,
+        blank=True,
     )
     provider = models.CharField(max_length=30, default="wompi")
     provider_reference = models.CharField(

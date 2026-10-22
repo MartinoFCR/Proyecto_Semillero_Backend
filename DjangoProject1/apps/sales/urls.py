@@ -7,6 +7,7 @@ from .views import (
     SaleViewSet,
     TicketViewSet,
     WompiCheckoutView,
+    WompiMultiCheckoutView,
     WompiTransactionStatusView,
     WompiWebhookView,
 )
@@ -23,6 +24,11 @@ urlpatterns = router.urls + [
         name="factus-invoice-retry",
     ),
     path("wompi/checkout/", WompiCheckoutView.as_view(), name="wompi-checkout"),
+    path(
+        "wompi/multi-checkout/",
+        WompiMultiCheckoutView.as_view(),
+        name="wompi-multi-checkout",
+    ),
     path(
         "wompi/status/",
         WompiTransactionStatusView.as_view(),

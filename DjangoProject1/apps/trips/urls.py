@@ -1,5 +1,7 @@
 from rest_framework.routers import DefaultRouter
+from django.urls import path
 from DjangoProject1.apps.trips.views import (
+    AvailableSeatsView,
     TripViewSet,
     TripFareViewSet,
     ReadingViewSet,
@@ -25,3 +27,10 @@ router.register(
 )
 
 urlpatterns = router.urls
+urlpatterns += [
+    path(
+        "trips/<int:trip_id>/available-seats/",
+        AvailableSeatsView.as_view(),
+        name="available-seats",
+    ),
+]

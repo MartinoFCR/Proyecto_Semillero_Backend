@@ -13,10 +13,21 @@ from DjangoProject1.serializers import GeoJSONPointField
 
 
 class TripSerializer(serializers.ModelSerializer):
+    fare_amount_cents = serializers.SerializerMethodField()
+    origin = serializers.CharField(source="route.origin.place_name", read_only=True)
+    destination = serializers.CharField(
+        source="route.destination.place_name",
+        read_only=True,
+    )
+
     class Meta:
         model = Trip
         fields = "__all__"
         read_only_fields = ("id",)
+
+    def get_fare_amount_cents(self, obj):
+        fare = getattr(obj, "fare", None)
+        return fare.amount_cents if fare else None
 
     def validate(self, attrs):
         instance = self.instance
