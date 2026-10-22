@@ -1,6 +1,10 @@
 import hashlib
 import hmac
 import os
+import json
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
+
 from django.db import transaction
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
@@ -43,7 +47,8 @@ def mark_sale_paid(sale, payment_status, provider_reference, raw_response):
             },
         )
         payment.status = payment_status
-        payment.provider_reference = provider_reference
+        if provider_reference:
+            payment.provider_reference = provider_reference
         payment.raw_response = raw_response
         payment.processed_at = timezone.now()
         payment.save()
@@ -69,6 +74,33 @@ def mark_sale_paid(sale, payment_status, provider_reference, raw_response):
             },
         )
         return sale
+
+
+def get_wompi_transaction(transaction_id):
+    base_url = os.getenv("WOMPI_BASE_URL", "https://sandbox.wompi.co/v1").rstrip("/")
+    private_key = os.getenv("WOMPI_PRIVATE_KEY")
+    if not private_key:
+        raise ValidationError("WOMPI_PRIVATE_KEY no está configurada.")
+
+    request = Request(
+        f"{base_url}/transactions/{transaction_id}",
+        headers={
+            "Authorization": f"Bearer {private_key}",
+            "Accept": "application/json",
+        },
+        method="GET",
+    )
+    try:
+        with urlopen(request, timeout=10) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        raise ValidationError(
+            {"transaction_id": "Wompi rechazó la consulta de la transacción."}
+        ) from exc
+    except (URLError, TimeoutError, json.JSONDecodeError) as exc:
+        raise ValidationError(
+            {"transaction_id": "No fue posible consultar Wompi en este momento."}
+        ) from exc
 
 
 def wompi_integrity_signature(reference, amount_cents, currency="COP"):

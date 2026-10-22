@@ -6,6 +6,7 @@ from .views import (
     SaleViewSet,
     TicketViewSet,
     WompiCheckoutView,
+    WompiTransactionStatusView,
     WompiWebhookView,
 )
 
@@ -16,5 +17,10 @@ router.register("tickets", TicketViewSet, basename="ticket")
 urlpatterns = router.urls + [
     path("admin-sales/", AdminSaleView.as_view(), name="admin-sale"),
     path("wompi/checkout/", WompiCheckoutView.as_view(), name="wompi-checkout"),
+    path(
+        "wompi/status/",
+        WompiTransactionStatusView.as_view(),
+        name="wompi-status",
+    ),
     path("wompi/webhook/", WompiWebhookView.as_view(), name="wompi-webhook"),
 ]
