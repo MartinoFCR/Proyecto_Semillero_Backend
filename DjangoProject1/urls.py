@@ -47,4 +47,7 @@ urlpatterns = [
     path("api/trips/", include(
         "DjangoProject1.apps.trips.urls"
     )),
+    path("api/sales/", include(
+        "DjangoProject1.apps.sales.urls"
+    )),
 ]

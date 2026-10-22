@@ -44,6 +44,7 @@ INSTALLED_APPS = [
     'DjangoProject1.apps.routes',
     'DjangoProject1.apps.trips',
     'DjangoProject1.apps.geography',
+    'DjangoProject1.apps.sales',
 ]
 
 MIDDLEWARE = [

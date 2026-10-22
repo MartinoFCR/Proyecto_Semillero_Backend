@@ -22,14 +22,18 @@ class Trip(models.Model):
     )
     fuel_start = models.DecimalField(
         max_digits=5,
-        decimal_places=2
+        decimal_places=2,
+        null=True,
+        blank=True
     )
     fuel_end = models.DecimalField(
         max_digits=5,
-        decimal_places=2
+        decimal_places=2,
+        null=True,
+        blank=True
     )
-    odometer_start = models.IntegerField()
-    odometer_end = models.IntegerField()
+    odometer_start = models.IntegerField(null=True, blank=True)
+    odometer_end = models.IntegerField(null=True, blank=True)
     passengers_start = models.IntegerField(default=0)
     trip_state = models.CharField(
         max_length=20,
