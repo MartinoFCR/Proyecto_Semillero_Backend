@@ -352,9 +352,11 @@ class ProfileSerializer(serializers.ModelSerializer):
             "last_name",
             "email",
             "telephone",
+            "role",
         )
         read_only_fields = (
             "id",
             "identification_document_code",
             "identification_number",
+            "role",
         )

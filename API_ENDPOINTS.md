@@ -144,7 +144,8 @@ PATCH /api/accounts/me/
 ```
 
 Requiere autenticación. El cliente solo puede consultar y editar su propio
-nombre, correo y celular. El tipo y número de documento son de solo lectura.
+nombre, correo y celular. El tipo, número de documento y `role` se devuelven
+en la respuesta, pero son de solo lectura.
 
 ### Listar usuarios
 
