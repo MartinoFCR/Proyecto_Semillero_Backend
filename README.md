@@ -193,6 +193,9 @@ Un viaje relaciona obligatoriamente un bus, un conductor y una ruta.
 /api/schema/redoc/
 ```
 
+La guía detallada de todos los endpoints, payloads y permisos está en
+[API_ENDPOINTS.md](./API_ENDPOINTS.md).
+
 ## Ventas y tiquetes
 
 La aplicación de ventas está en
