@@ -1,6 +1,7 @@
 from rest_framework.routers import DefaultRouter
 from DjangoProject1.apps.trips.views import (
     TripViewSet,
+    TripFareViewSet,
     ReadingViewSet,
     EventViewSet,
     CurrentSeatStateViewSet,
@@ -9,6 +10,7 @@ from DjangoProject1.apps.trips.views import (
 
 router = DefaultRouter()
 router.register("trips", TripViewSet, basename="trip")
+router.register("fares", TripFareViewSet, basename="trip-fare")
 router.register("readings", ReadingViewSet, basename="reading")
 router.register("events", EventViewSet, basename="event")
 router.register(

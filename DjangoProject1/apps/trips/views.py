@@ -10,6 +10,7 @@ from DjangoProject1.apps.trips.models import (
     Event,
     CurrentSeatState,
     SeatsStateRecord,
+    TripFare,
 )
 from DjangoProject1.apps.trips.serializers import (
     TripSerializer,
@@ -17,9 +18,11 @@ from DjangoProject1.apps.trips.serializers import (
     EventSerializer,
     CurrentSeatStateSerializer,
     SeatsStateRecordSerializer,
+    TripFareSerializer,
 )
 from DjangoProject1.permissions import (
     IsAdminRole,
+    IsAdminOrReadOnly,
     IsAdminOrAssignedDriverReadOnly,
     IsAdminOrAssignedDriver,
 )
@@ -28,6 +31,11 @@ from DjangoProject1.permissions import (
 class TripViewSet(ModelViewSet):
     serializer_class = TripSerializer
     permission_classes = [IsAdminOrAssignedDriverReadOnly]
+
+    def get_permissions(self):
+        if self.request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+            return [IsAdminRole()]
+        return super().get_permissions()
 
     def get_queryset(self):
         queryset = Trip.objects.select_related(
@@ -52,6 +60,12 @@ class TripViewSet(ModelViewSet):
             return queryset.none()
 
         return queryset.filter(driver=driver_profile)
+
+
+class TripFareViewSet(ModelViewSet):
+    queryset = TripFare.objects.select_related("trip").all()
+    serializer_class = TripFareSerializer
+    permission_classes = [IsAdminOrReadOnly]
 
 
 class ReadingViewSet(ModelViewSet):

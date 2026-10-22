@@ -241,10 +241,12 @@ Ejemplo:
   "telephone": "3001234567",
   "trip": 1,
   "seat": 5,
-  "amount_cents": 2500000,
   "payment_method": "cash"
 }
 ```
+
+El valor no se recibe del cliente: el backend lo obtiene de la tarifa
+administrada para ese viaje (`/api/trips/fares/`).
 
 Las ventas administrativas se marcan como pagadas y generan el tiquete
 inmediatamente. Si el cliente no existe, se crea como cliente y su contraseña
@@ -264,10 +266,12 @@ Ejemplo:
 ```json
 {
   "trip": 1,
-  "seat": 5,
-  "amount_cents": 2500000
+  "seat": 5
 }
 ```
+
+El backend calcula el valor usando la tarifa asociada al viaje. El cliente no
+puede modificar `amount_cents`.
 
 El backend crea una venta pendiente y devuelve:
 

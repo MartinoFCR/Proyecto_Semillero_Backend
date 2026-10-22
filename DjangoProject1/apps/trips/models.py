@@ -46,6 +46,21 @@ class Trip(models.Model):
         verbose_name_plural = 'Viajes'
         verbose_name = 'Viaje'
 
+
+class TripFare(models.Model):
+    trip = models.OneToOneField(
+        Trip,
+        on_delete=models.CASCADE,
+        related_name="fare",
+    )
+    amount_cents = models.PositiveIntegerField()
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name_plural = 'Tarifas de viajes'
+        verbose_name = 'Tarifa de viaje'
+
+
 class Reading(models.Model):
     trip = models.ForeignKey(Trip, on_delete=models.CASCADE, null=False)
     time_stamp = models.DateTimeField(default=timezone.now)

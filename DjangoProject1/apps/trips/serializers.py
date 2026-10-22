@@ -6,6 +6,7 @@ from DjangoProject1.apps.trips.models import (
     Reading,
     SeatsStateRecord,
     Trip,
+    TripFare,
 )
 from DjangoProject1.serializers import GeoJSONPointField
 
@@ -56,6 +57,19 @@ class TripSerializer(serializers.ModelSerializer):
 
         return attrs
 
+
+class TripFareSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = TripFare
+        fields = "__all__"
+        read_only_fields = ("id", "updated_at")
+
+    def validate_amount_cents(self, value):
+        if value <= 0:
+            raise serializers.ValidationError(
+                "La tarifa debe ser mayor que cero."
+            )
+        return value
 
 
 class ReadingSerializer(serializers.ModelSerializer):

@@ -1,6 +1,7 @@
 import os
 
 from django.contrib.auth import get_user_model
+from django.core.exceptions import ObjectDoesNotExist
 from django.db import transaction
 from rest_framework import status
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -22,14 +23,6 @@ from .services import (
 )
 
 User = get_user_model()
-
-
-def _parse_amount(value):
-    amount = int(value)
-    if amount <= 0:
-        raise ValueError("El valor debe ser mayor que cero.")
-    return amount
-
 
 class SaleViewSet(ReadOnlyModelViewSet):
     serializer_class = SaleSerializer
@@ -70,7 +63,6 @@ class AdminSaleView(APIView):
             "telephone",
             "trip",
             "seat",
-            "amount_cents",
             "payment_method",
         )
         missing = [field for field in required if field not in request.data]
@@ -101,12 +93,18 @@ class AdminSaleView(APIView):
                     customer.set_password(request.data["identification_number"])
                     customer.save(update_fields=["password"])
 
-                trip = Trip.objects.select_related("bus").get(
+                trip = Trip.objects.select_related("bus", "fare").get(
                     pk=request.data["trip"]
                 )
                 seat = trip.bus.seats.get(pk=request.data["seat"])
-                amount_cents = _parse_amount(request.data["amount_cents"])
-            except (Seat.DoesNotExist, Trip.DoesNotExist, ValueError, TypeError):
+                amount_cents = trip.fare.amount_cents
+            except (
+                Seat.DoesNotExist,
+                Trip.DoesNotExist,
+                ObjectDoesNotExist,
+                ValueError,
+                TypeError,
+            ):
                 return Response(
                     {"detail": "El viaje o el valor de la venta no es válido."},
                     status=status.HTTP_400_BAD_REQUEST,
@@ -145,15 +143,16 @@ class WompiCheckoutView(APIView):
 
     def post(self, request):
         try:
-            trip = Trip.objects.select_related("bus").get(
+            trip = Trip.objects.select_related("bus", "fare").get(
                 pk=request.data["trip"]
             )
-            amount_cents = _parse_amount(request.data["amount_cents"])
             seat = trip.bus.seats.get(pk=request.data["seat"])
+            amount_cents = trip.fare.amount_cents
         except (
             KeyError,
             Seat.DoesNotExist,
             Trip.DoesNotExist,
+            ObjectDoesNotExist,
             ValueError,
             TypeError,
         ):
@@ -213,7 +212,10 @@ class WompiWebhookView(APIView):
             sale = Sale.objects.get(payment__provider_reference=reference)
         except Sale.DoesNotExist:
             return Response({"detail": "Venta no encontrada."}, status=404)
-        if transaction_data.get("amount_in_cents") != sale.amount_cents:
+        if (
+            transaction_data.get("amount_in_cents") != sale.amount_cents
+            or transaction_data.get("currency") != "COP"
+        ):
             return Response({"detail": "El valor del pago no coincide."}, status=400)
         mark_sale_paid(
             sale,

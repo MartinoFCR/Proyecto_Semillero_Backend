@@ -1,7 +1,7 @@
 import hashlib
 import hmac
-import os
 import json
+import os
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -54,9 +54,7 @@ def mark_sale_paid(sale, payment_status, provider_reference, raw_response):
         payment.save()
 
         if payment_status != "APPROVED":
-            sale.status = (
-                Sale.Status.FAILED
-            )
+            sale.status = Sale.Status.FAILED
             sale.save(update_fields=["status", "updated_at"])
             return sale
 
@@ -77,7 +75,10 @@ def mark_sale_paid(sale, payment_status, provider_reference, raw_response):
 
 
 def get_wompi_transaction(transaction_id):
-    base_url = os.getenv("WOMPI_BASE_URL", "https://sandbox.wompi.co/v1").rstrip("/")
+    base_url = os.getenv(
+        "WOMPI_BASE_URL",
+        "https://sandbox.wompi.co/v1",
+    ).rstrip("/")
     private_key = os.getenv("WOMPI_PRIVATE_KEY")
     if not private_key:
         raise ValidationError("WOMPI_PRIVATE_KEY no está configurada.")
@@ -85,7 +86,7 @@ def get_wompi_transaction(transaction_id):
     request = Request(
         f"{base_url}/transactions/{transaction_id}",
         headers={
-            "Authorization": f"Bearer {private_key}",
+            "Authorization": "Bearer " + private_key,
             "Accept": "application/json",
         },
         method="GET",
@@ -112,16 +113,43 @@ def wompi_integrity_signature(reference, amount_cents, currency="COP"):
 
 
 def validate_wompi_event_signature(payload):
-    event = payload.get("event", {})
+    events_secret = os.getenv("WOMPI_EVENTS_SECRET")
+    if not events_secret:
+        return False
+
+    if not isinstance(payload, dict):
+        return False
+    event = payload.get("event")
     data = payload.get("data", {})
+    if not isinstance(data, dict):
+        return False
     signature = data.get("signature", {})
+    if not isinstance(signature, dict):
+        return False
     timestamp = payload.get("timestamp")
-    properties = signature.get("properties", [])
+    properties = signature.get("properties")
     transaction = data.get("transaction", {})
-    values = "".join(str(transaction.get(prop, "")) for prop in properties)
-    expected = hashlib.sha256(f"{values}{timestamp}{os.getenv('WOMPI_EVENTS_SECRET', '')}".encode()).hexdigest()
-    return bool(
-        signature.get("checksum")
-        and hmac.compare_digest(signature["checksum"], expected)
-        and event == "transaction.updated"
+    expected_properties = (
+        "transaction.id",
+        "transaction.status",
+        "transaction.amount_in_cents",
+        "transaction.currency",
+        "transaction.reference",
     )
+    if (
+        event != "transaction.updated"
+        or not isinstance(timestamp, (int, str))
+        or tuple(properties or ()) != expected_properties
+        or not isinstance(transaction, dict)
+        or not signature.get("checksum")
+    ):
+        return False
+
+    values = "".join(
+        str(transaction.get(prop.split(".", 1)[1], ""))
+        for prop in expected_properties
+    )
+    expected = hashlib.sha256(
+        f"{values}{timestamp}{events_secret}".encode()
+    ).hexdigest()
+    return hmac.compare_digest(signature["checksum"], expected)
