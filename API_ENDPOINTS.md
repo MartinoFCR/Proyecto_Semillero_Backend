@@ -142,9 +142,34 @@ PATCH /api/accounts/users/{id}/
 DELETE /api/accounts/users/{id}/
 ```
 
-Solo administradores. Actualmente no existe una ruta específica de
-`/customers/search/`; para la venta administrativa, el endpoint
-`/api/sales/admin-sales/` busca o crea el cliente automáticamente.
+Solo administradores. La venta administrativa también busca o crea el cliente automáticamente,
+pero para administrar clientes desde una pantalla separada están disponibles
+estas rutas:
+
+```http
+GET /api/accounts/customers/search/?identification_number=1000000000
+GET /api/accounts/customers/
+POST /api/accounts/customers/
+GET /api/accounts/customers/{id}/
+PATCH /api/accounts/customers/{id}/
+```
+
+Solo administradores pueden utilizarlas. El payload para crear un cliente es:
+
+```json
+{
+  "identification_number": "1000000000",
+  "name": "Juan Perez",
+  "email": "juan@example.com",
+  "telephone": "3001234567",
+  "identification_document_code": "13"
+}
+```
+
+La búsqueda devuelve `404` si no existe un cliente con ese documento. Los
+clientes creados por esta ruta no tienen una contraseña utilizable; el
+frontend no debe enviar ni mostrar contraseñas. Los tipos de documento
+disponibles son `13` (CC), `22` (CE), `41` (pasaporte) y `12` (TI).
 
 ## 5. Flota
 

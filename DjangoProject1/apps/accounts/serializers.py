@@ -179,3 +179,96 @@ class UserSerializer(serializers.ModelSerializer):
             user.set_password(password)
             user.save(update_fields=["password"])
         return user
+
+
+class CustomerSerializer(serializers.ModelSerializer):
+    name = serializers.CharField(
+        source="first_name",
+        max_length=150,
+        allow_blank=False,
+    )
+    identification_document_code = serializers.ChoiceField(
+        choices=User.DocumentType.choices,
+    )
+    identification_number = serializers.RegexField(
+        r"^[A-Za-z0-9.-]+$",
+        max_length=20,
+    )
+    telephone = serializers.RegexField(
+        r"^\+?[0-9 ()-]{7,20}$",
+        max_length=20,
+        allow_blank=True,
+        required=False,
+    )
+
+    class Meta:
+        model = User
+        fields = (
+            "id",
+            "identification_document_code",
+            "identification_number",
+            "name",
+            "email",
+            "telephone",
+        )
+        read_only_fields = ("id",)
+
+    def validate_email(self, value):
+        value = value.strip().lower()
+        queryset = User.objects.filter(email__iexact=value)
+        if self.instance:
+            queryset = queryset.exclude(pk=self.instance.pk)
+        if queryset.exists():
+            raise serializers.ValidationError(
+                "Este correo electrónico ya está registrado."
+            )
+        return value
+
+    def validate_name(self, value):
+        value = " ".join(value.strip().split())
+        if not value:
+            raise serializers.ValidationError(
+                "El nombre no puede estar vacío."
+            )
+        return value
+
+    def validate_identification_number(self, value):
+        value = value.strip()
+        queryset = User.objects.filter(
+            identification_number__iexact=value
+        )
+        if self.instance:
+            queryset = queryset.exclude(pk=self.instance.pk)
+        if queryset.exists():
+            raise serializers.ValidationError(
+                "Este número de identificación ya está registrado."
+            )
+        return value
+
+    def create(self, validated_data):
+        validated_data["username"] = (
+            "customer_" + validated_data["identification_number"]
+        )
+        validated_data["role"] = User.Role.CLIENT
+        user = User(**validated_data)
+        user.set_unusable_password()
+        user.save()
+        return user
+
+    def update(self, instance, validated_data):
+        instance.first_name = validated_data.pop(
+            "first_name",
+            instance.first_name,
+        )
+        for field, value in validated_data.items():
+            setattr(instance, field, value)
+        instance.role = User.Role.CLIENT
+        instance.save()
+        return instance
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        data["name"] = " ".join(
+            part for part in (instance.first_name, instance.last_name) if part
+        )
+        return data
