@@ -102,6 +102,39 @@ python manage.py check
 python manage.py migrate
 ```
 
+Después de publicar cambios que agreguen modelos o campos, las migraciones
+también deben ejecutarse dentro del contenedor que usa la base de datos de
+producción. Por ejemplo:
+
+```bash
+docker exec semillero-backend python3 manage.py migrate
+docker exec semillero-backend python3 manage.py showmigrations accounts sales fleet
+docker compose restart backend
+```
+
+Para esta versión deben aparecer aplicadas, como mínimo, estas migraciones:
+
+```text
+accounts 0003_user_photo_card_id
+sales    0005_saleitem_sale_idempotency_key
+sales    0006_passenger_document_codes
+sales    0007_alter_sale_status
+fleet    0004_bustype_bus_bus_type
+```
+
+Si `/api/token/` devuelve `500` después de desplegar esta versión, revisar
+primero `showmigrations`. Un `OPTIONS /api/token/` con respuesta `200` solo
+confirma que la ruta está publicada; no confirma que el esquema de la base de
+datos esté actualizado. No se deben borrar usuarios ni reinicializar la base
+de datos: aplicar las migraciones conserva los datos existentes.
+
+La migración `accounts.0003_user_photo_card_id` crea un UUID distinto para
+cada usuario existente antes de aplicar la restricción única de `card_id`.
+Si una imagen anterior de la migración falló con `UniqueViolation` sobre
+`accounts_user_card_id_key`, se debe reconstruir el contenedor con esta
+versión corregida y ejecutar nuevamente `migrate`; la migración fallida se
+revierte y no debe marcarse manualmente como aplicada.
+
 La migración de viajes permite dejar como opcionales los datos operativos que
 aún no están implementados:
 
