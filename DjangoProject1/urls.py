@@ -55,4 +55,7 @@ urlpatterns = [
     path("api/sales/", include(
         "DjangoProject1.apps.sales.urls"
     )),
+    path("api/public/", include(
+        "DjangoProject1.public_urls"
+    )),
 ]

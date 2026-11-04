@@ -23,6 +23,68 @@ Las respuestas usan JSON. Los identificadores (`id`) son enteros. Las
 respuestas de listados de Django REST Framework pueden tener paginación si se
 configura globalmente en el entorno.
 
+## 1.1. Consulta pública para la página principal
+
+Estos endpoints no requieren token y son de solo lectura. Devuelven únicamente
+la información necesaria para mostrar la oferta de transporte, sin exponer
+datos del conductor, del bus ni información operativa interna.
+
+### Rutas disponibles
+
+```http
+GET /api/public/routes/
+```
+
+La respuesta usa la paginación estándar del backend:
+
+```json
+{
+  "count": 1,
+  "next": null,
+  "previous": null,
+  "results": [
+    {
+      "id": 3,
+      "origin": {
+        "id": 10,
+        "name": "Terminal de Bucaramanga",
+        "city": {
+          "id": 1,
+          "name": "Bucaramanga",
+          "department": {
+            "id": 1,
+            "name": "Santander"
+          }
+        }
+      },
+      "destination": {
+        "id": 25,
+        "name": "Terminal de San Gil",
+        "city": {
+          "id": 2,
+          "name": "San Gil",
+          "department": {
+            "id": 1,
+            "name": "Santander"
+          }
+        }
+      },
+      "distance_km": "96.50"
+    }
+  ]
+}
+```
+
+### Viajes programados
+
+```http
+GET /api/public/trips/
+```
+
+Este endpoint devuelve únicamente viajes con estado `scheduled` cuya fecha de
+inicio todavía no ha pasado. Incluye la ruta, horario y tarifa (en centavos);
+no requiere autenticación y también usa paginación.
+
 ## 2. Autenticación
 
 ### Obtener tokens
@@ -754,54 +816,5 @@ Framework y `drf-spectacular`.
 5. Enviar POST /api/sales/wompi/status/ con el resultado.
 6. Consultar GET /api/sales/sales/{id}/ o GET /api/sales/tickets/.
 ```
-
-### Compra online de varias sillas
-
-```http
-POST /api/sales/wompi/multi-checkout/
-```
-
-Solicitud:
-
-```json
-{
-  "trip": 15,
-  "passengers": [
-    {
-      "seat": 5,
-      "name": "Ana Perez",
-      "identification_number": "100000001",
-      "email": "ana@example.com",
-      "telephone": "3001234567"
-    },
-    {
-      "seat": 6,
-      "name": "Luis Perez",
-      "identification_number": "100000002",
-      "email": "luis@example.com",
-      "telephone": "3007654321"
-    }
-  ],
-  "redirect_url": "https://portalbic.site/clientes/comprar"
-}
-```
-
-El backend calcula el total, reserva todas las sillas durante cinco minutos y
-devuelve un único `purchase_id`, `reference`, `amount_in_cents`,
-`signature_integrity` y `expires_at` para el Widget de Wompi. Si una silla no
-está disponible, responde `409` y no deja reservas parciales.
-
-Para confirmar el pago se utiliza `POST /api/sales/wompi/status/` enviando
-`purchase_id` y el `transaction_id` de Wompi:
-
-```json
-{
-  "purchase_id": 31,
-  "transaction_id": "ID_DEVUELTO_POR_WOMPI"
-}
-```
-
-Se genera un tiquete por pasajero; una confirmación repetida no duplica los
-tiquetes. El endpoint individual continúa usando `sale_id`.
 
 El precio siempre debe provenir del backend. El frontend solo lo muestra.

@@ -1,15 +1,6 @@
 from rest_framework import serializers
 
-from .models import FactusInvoice, Payment, Purchase, Sale, Ticket
-
-
-class PurchaseSerializer(serializers.ModelSerializer):
-    sales = serializers.PrimaryKeyRelatedField(many=True, read_only=True)
-
-    class Meta:
-        model = Purchase
-        fields = "__all__"
-        read_only_fields = fields
+from .models import FactusInvoice, Payment, Sale, Ticket
 
 
 class TicketSerializer(serializers.ModelSerializer):

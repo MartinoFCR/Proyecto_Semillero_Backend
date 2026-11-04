@@ -173,6 +173,12 @@ configuración actual de Simple JWT.
 
 Una ruta relaciona un origen, un destino y una distancia en kilómetros.
 
+Para la página principal hay una consulta pública de rutas, sin token:
+
+```text
+/api/public/routes/
+```
+
 ### Viajes
 
 ```text
@@ -184,6 +190,12 @@ Una ruta relaciona un origen, un destino y una distancia en kilómetros.
 ```
 
 Un viaje relaciona obligatoriamente un bus, un conductor y una ruta.
+
+Los viajes programados próximos también pueden consultarse públicamente desde:
+
+```text
+/api/public/trips/
+```
 
 ### Documentación de API
 
