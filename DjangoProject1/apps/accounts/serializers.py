@@ -341,6 +341,7 @@ class PublicRegistrationSerializer(serializers.ModelSerializer):
 
 class ProfileSerializer(serializers.ModelSerializer):
     name = serializers.CharField(source="first_name", max_length=150)
+    photo_url = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -353,10 +354,18 @@ class ProfileSerializer(serializers.ModelSerializer):
             "email",
             "telephone",
             "role",
+            "photo_url",
         )
         read_only_fields = (
             "id",
             "identification_document_code",
             "identification_number",
             "role",
+            "photo_url",
         )
+
+    def get_photo_url(self, user):
+        if not user.photo:
+            return None
+        request = self.context.get("request")
+        return request.build_absolute_uri(user.photo.url) if request else user.photo.url

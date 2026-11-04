@@ -85,6 +85,50 @@ Este endpoint devuelve únicamente viajes con estado `scheduled` cuya fecha de
 inicio todavía no ha pasado. Incluye la ruta, horario y tarifa (en centavos);
 no requiere autenticación y también usa paginación.
 
+Admite los filtros opcionales `origin`, `destination` (identificadores de
+terminal) y `date` (`YYYY-MM-DD`):
+
+```http
+GET /api/public/trips/?origin=10&destination=25&date=2026-11-04
+```
+
+Cada viaje incluye `id`, `route`, `date_time_start`, `date_time_end`,
+`fare_amount_cents` y `currency` (`COP`).
+
+### Disponibilidad de sillas
+
+```http
+GET /api/trips/trips/{trip_id}/seats/
+```
+
+No requiere token. Devuelve `server_time` y el estado de cada silla:
+`available`, `reserved` o `sold`. Esta consulta no garantiza la reserva; el
+checkout vuelve a validarla bajo concurrencia.
+
+## 1.2. Portal del cliente
+
+### Foto de perfil
+
+```http
+POST /api/accounts/me/photo/
+DELETE /api/accounts/me/photo/
+```
+
+Requiere autenticación. El `POST` usa `multipart/form-data` con el campo
+`photo`. Se aceptan JPG, PNG y WEBP, con máximo 5 MB y 2000 x 2000 píxeles.
+`GET /api/accounts/me/` devuelve `photo_url`.
+
+### Carné digital
+
+```http
+GET /api/accounts/me/card/
+GET /api/accounts/cards/verify/?token=QR_TOKEN
+```
+
+El primer endpoint requiere autenticación. El QR contiene una referencia
+firmada y opaca, nunca el JWT ni los datos personales completos. El carné
+identifica al cliente, pero no sustituye un tiquete ni acredita una compra.
+
 ## 2. Autenticación
 
 ### Obtener tokens
@@ -301,6 +345,34 @@ PATCH  /api/fleet/buses/{id}/
 DELETE /api/fleet/buses/{id}/
 ```
 
+### Tipos de bus
+
+Los tipos de bus son administrables y tienen una capacidad máxima. Todos los
+métodos de lectura requieren autenticación; crear, editar y eliminar tipos
+requiere administrador.
+
+```text
+GET    /api/fleet/bus-types/
+POST   /api/fleet/bus-types/
+GET    /api/fleet/bus-types/{id}/
+PUT    /api/fleet/bus-types/{id}/
+PATCH  /api/fleet/bus-types/{id}/
+DELETE /api/fleet/bus-types/{id}/
+```
+
+Crear un tipo:
+
+```json
+{
+  "name": "Bus urbano",
+  "code": "bus-urbano",
+  "max_capacity": 60
+}
+```
+
+Se pueden crear, por ejemplo, los tipos `Bus urbano`, `Buseta` y `Microbús`.
+La capacidad máxima debe definirse según la configuración real de la flota.
+
 Crear un bus:
 
 ```json
@@ -308,9 +380,14 @@ Crear un bus:
   "plate": "ABC123",
   "capacity": 40,
   "model": "2024",
+  "bus_type": 1,
   "state": "Active"
 }
 ```
+
+`bus_type` es opcional para conservar los buses existentes. Cuando se envía,
+`capacity` no puede superar `max_capacity` del tipo seleccionado. La respuesta
+del bus incluye también `bus_type_detail`.
 
 Estados de bus: `Active`, `Inactive`, `Maintenance`.
 
@@ -668,6 +745,7 @@ reducido.
 
 ```http
 POST /api/sales/wompi/checkout/
+Idempotency-Key: identificador-unico-del-intento
 ```
 
 Solicitud:
@@ -675,15 +753,35 @@ Solicitud:
 ```json
 {
   "trip": 15,
-  "seat": 5,
+  "passengers": [
+    {
+      "seat": 5,
+      "name": "Ana Pérez",
+      "identification_document_code": "13",
+      "identification_number": "100000001",
+      "email": "ana@example.com",
+      "telephone": "3001234567"
+    },
+    {
+      "seat": 6,
+      "name": "Luis Pérez",
+      "identification_document_code": "13",
+      "identification_number": "100000002",
+      "email": "luis@example.com",
+      "telephone": "3007654321"
+    }
+  ],
   "redirect_url": "https://frontend.example.com/resultado"
 }
 ```
 
 `redirect_url` es opcional. El usuario debe estar autenticado.
+El comprador es el usuario autenticado; no se crean cuentas para los
+pasajeros. Se permiten máximo 10 boletas por compra. La clave de idempotencia
+es obligatoria y repetirla devuelve la misma venta sin crear otra.
 
 El backend valida la silla, obtiene el precio de `TripFare`, crea una venta
-`pending`, reserva la silla durante 5 minutos y devuelve datos para el Widget
+`pending`, reserva todas las sillas durante 5 minutos y devuelve datos para el Widget
 de Wompi:
 
 ```json
@@ -692,13 +790,22 @@ de Wompi:
   "reference": "SALE-20-...",
   "public_key": "pub_test_...",
   "currency": "COP",
-  "amount_in_cents": 2500000,
-  "signature_integrity": "..."
+  "amount_in_cents": 5000000,
+  "signature_integrity": "...",
+  "expires_at": "2026-11-04T15:05:00Z",
+  "server_time": "2026-11-04T15:00:00Z",
+  "quantity": 2
 }
 ```
 
 El frontend debe usar esos valores con el Widget. Nunca debe enviar un precio
-propio ni enviar datos de tarjeta al backend.
+propio ni enviar datos de tarjeta al backend. Si una sola silla no está
+disponible, la operación completa responde `409 Conflict` y no crea reservas
+parciales.
+
+Al aprobarse el pago se emite un tiquete por silla. Los reintentos del webhook
+o de consulta de estado son idempotentes. Una factura Factus representa toda
+la compra y contiene un concepto por boleta.
 
 ### Confirmar el estado de una transacción
 
@@ -739,6 +846,16 @@ Solo administradores:
 ```http
 POST /api/sales/factus/invoices/{sale_id}/retry/
 ```
+
+El cliente puede consultar su propia factura con:
+
+```http
+GET /api/sales/sales/{sale_id}/invoice/
+```
+
+Si Factus aún no la ha emitido, la respuesta indica `status: pending` o
+`status: error`; no se genera un documento ficticio. Un cliente no puede
+consultar facturas de otra venta.
 
 No requiere cuerpo. Ejemplo:
 

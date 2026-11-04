@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from .models import FactusInvoice, Payment, Sale, Ticket
+from .models import FactusInvoice, Payment, Sale, SaleItem, Ticket
 
 
 class TicketSerializer(serializers.ModelSerializer):
@@ -8,6 +8,13 @@ class TicketSerializer(serializers.ModelSerializer):
         model = Ticket
         fields = "__all__"
         read_only_fields = ("ticket_code", "issued_at", "status")
+
+
+class SaleItemSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SaleItem
+        fields = "__all__"
+        read_only_fields = ("sale",)
 
 
 class PaymentSerializer(serializers.ModelSerializer):
@@ -35,18 +42,49 @@ class FactusInvoiceSerializer(serializers.ModelSerializer):
             "raw_response",
             "created_at",
             "updated_at",
-            "expires_at",
         )
 
 
 class SaleSerializer(serializers.ModelSerializer):
+    items = SaleItemSerializer(many=True, read_only=True)
     tickets = TicketSerializer(many=True, read_only=True)
     payment = PaymentSerializer(read_only=True)
     factus_invoice = FactusInvoiceSerializer(read_only=True)
+    quantity = serializers.IntegerField(read_only=True)
+    route = serializers.SerializerMethodField()
+    trip_start = serializers.DateTimeField(
+        source="trip.date_time_start",
+        read_only=True,
+    )
 
     class Meta:
         model = Sale
-        fields = "__all__"
+        fields = (
+            "id",
+            "buyer",
+            "created_by",
+            "source",
+            "payment_method",
+            "status",
+            "amount_cents",
+            "trip",
+            "seat",
+            "passenger_identification",
+            "passenger_name",
+            "passenger_email",
+            "passenger_telephone",
+            "expires_at",
+            "idempotency_key",
+            "created_at",
+            "updated_at",
+            "quantity",
+            "route",
+            "trip_start",
+            "items",
+            "tickets",
+            "payment",
+            "factus_invoice",
+        )
         read_only_fields = (
             "buyer",
             "created_by",
@@ -54,4 +92,13 @@ class SaleSerializer(serializers.ModelSerializer):
             "status",
             "created_at",
             "updated_at",
+            "idempotency_key",
         )
+
+    def get_route(self, sale):
+        route = sale.trip.route
+        return {
+            "id": route.id,
+            "origin": route.origin.place_name,
+            "destination": route.destination.place_name,
+        }

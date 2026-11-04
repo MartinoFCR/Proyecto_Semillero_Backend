@@ -9,18 +9,21 @@ from django.db import transaction
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
-from .models import FactusInvoice, Payment, Sale, Ticket
+from .models import FactusInvoice, Payment, Sale, SaleItem, Ticket
 
 
 def create_ticket_for_sale(sale, trip, seat, passenger):
     if seat.bus_id != trip.bus_id:
         raise ValidationError({"seat": "La silla no pertenece al bus del viaje."})
 
-    if Ticket.objects.filter(
+    existing_ticket = Ticket.objects.filter(
         trip=trip,
         seat=seat,
         status=Ticket.Status.ISSUED,
-    ).exists():
+    ).first()
+    if existing_ticket:
+        if existing_ticket.sale_id == sale.pk:
+            return existing_ticket
         raise ValidationError({"seat": "La silla ya está vendida para este viaje."})
 
     return Ticket.objects.create(
@@ -28,6 +31,10 @@ def create_ticket_for_sale(sale, trip, seat, passenger):
         trip=trip,
         seat=seat,
         passenger_identification=passenger["identification_number"],
+        passenger_identification_document_code=passenger.get(
+            "identification_document_code",
+            "",
+        ),
         passenger_name=passenger["name"],
         passenger_email=passenger["email"],
         passenger_telephone=passenger.get("telephone", ""),
@@ -68,17 +75,34 @@ def mark_sale_paid(sale, payment_status, provider_reference, raw_response):
 
         sale.status = Sale.Status.PAID
         sale.save(update_fields=["status", "updated_at"])
-        create_ticket_for_sale(
-            sale,
-            sale.trip,
-            sale.seat,
-            {
-                "identification_number": sale.passenger_identification,
-                "name": sale.passenger_name,
-                "email": sale.passenger_email,
-                "telephone": sale.passenger_telephone,
-            },
-        )
+        items = list(sale.items.select_related("trip", "seat"))
+        if not items:
+            items = [
+                SaleItem(
+                    sale=sale,
+                    trip=sale.trip,
+                    seat=sale.seat,
+                    passenger_identification=sale.passenger_identification,
+                    passenger_name=sale.passenger_name,
+                    passenger_email=sale.passenger_email,
+                    passenger_telephone=sale.passenger_telephone,
+                )
+            ]
+        for item in items:
+            create_ticket_for_sale(
+                sale,
+                item.trip,
+                item.seat,
+                {
+                    "identification_number": item.passenger_identification,
+                    "identification_document_code": (
+                        item.passenger_identification_document_code
+                    ),
+                    "name": item.passenger_name,
+                    "email": item.passenger_email,
+                    "telephone": item.passenger_telephone,
+                },
+            )
         transaction.on_commit(
             lambda sale_id=sale.pk: issue_factus_invoice(sale_id)
         )
@@ -238,12 +262,27 @@ def _factus_invoice_payload(sale, config):
         Sale.PaymentMethod.CARD: "48",
         Sale.PaymentMethod.WOMPI: "48",
     }
+    items = list(sale.items.all())
+    if not items:
+        items = [
+            SaleItem(
+                trip=sale.trip,
+                seat=sale.seat,
+                passenger_identification=sale.passenger_identification,
+                passenger_identification_document_code=(
+                    sale.passenger_identification_document_code
+                ),
+                passenger_name=sale.passenger_name,
+                passenger_email=sale.passenger_email,
+                passenger_telephone=sale.passenger_telephone,
+            )
+        ]
     payload = {
         "reference_code": f"SALE-{sale.pk}",
         "document": "01",
         "operation_type": "10",
         "send_email": False,
-        "observation": f"Transporte - tiquete {sale.tickets.first().ticket_code}",
+        "observation": f"Transporte - venta {sale.pk}",
         "payment_details": [
             {
                 "payment_form": "1",
@@ -253,7 +292,9 @@ def _factus_invoice_payload(sale, config):
             }
         ],
         "customer": {
-            "identification_document_code": "13",
+            "identification_document_code": (
+                items[0].passenger_identification_document_code or "13"
+            ),
             "identification": sale.passenger_identification,
             "legal_organization_code": "2",
             "tribute_code": "ZZ",
@@ -266,10 +307,16 @@ def _factus_invoice_payload(sale, config):
         "items": [
             {
                 "code_reference": config["FACTUS_PRODUCT_CODE"],
-                "name": config["FACTUS_PRODUCT_NAME"],
+                "name": (
+                    f"{config['FACTUS_PRODUCT_NAME']} - "
+                    f"silla {item.seat.seat_number}"
+                ),
                 "quantity": "1",
                 "discount_rate": "0.00",
-                "price": f"{price:.2f}",
+                "price": f"{(
+                    sale.amount_cents // len(items)
+                    + (index < sale.amount_cents % len(items))
+                ) / 100:.2f}",
                 "unit_measure_code": config["FACTUS_UNIT_MEASURE_CODE"],
                 "standard_code": config["FACTUS_STANDARD_CODE"],
                 "taxes": [
@@ -283,6 +330,7 @@ def _factus_invoice_payload(sale, config):
                     }
                 ],
             }
+            for index, item in enumerate(items)
         ],
     }
     if config["FACTUS_MUNICIPALITY_CODE"]:

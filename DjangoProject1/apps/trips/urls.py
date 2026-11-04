@@ -33,4 +33,9 @@ urlpatterns += [
         AvailableSeatsView.as_view(),
         name="available-seats",
     ),
+    path(
+        "trips/<int:trip_id>/seats/",
+        AvailableSeatsView.as_view(),
+        name="trip-seats",
+    ),
 ]

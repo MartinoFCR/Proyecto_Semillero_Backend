@@ -13,7 +13,7 @@ from rest_framework.viewsets import ReadOnlyModelViewSet
 
 from DjangoProject1.apps.fleet.models import Seat
 from DjangoProject1.apps.trips.models import Trip
-from .models import Payment, Sale, Ticket
+from .models import Payment, Sale, SaleItem, Ticket
 from .permissions import IsAdminOrSaleOwner
 from .serializers import (
     FactusInvoiceSerializer,
@@ -39,7 +39,9 @@ class SaleViewSet(ReadOnlyModelViewSet):
         queryset = Sale.objects.select_related(
             "buyer",
             "created_by",
-        ).prefetch_related("tickets", "payment")
+            "trip__route__origin",
+            "trip__route__destination",
+        ).prefetch_related("tickets", "payment", "items")
         if self.request.user.role == "admin":
             return queryset
         return queryset.filter(buyer=self.request.user)
@@ -143,6 +145,23 @@ class AdminSaleView(APIView):
                 trip=trip,
                 seat=seat,
                 passenger_identification=request.data["identification_number"],
+                passenger_identification_document_code=request.data.get(
+                    "identification_document_code",
+                    "",
+                ),
+                passenger_name=request.data["name"],
+                passenger_email=request.data["email"],
+                passenger_telephone=request.data["telephone"],
+            )
+            SaleItem.objects.create(
+                sale=sale,
+                trip=trip,
+                seat=seat,
+                passenger_identification=request.data["identification_number"],
+                passenger_identification_document_code=request.data.get(
+                    "identification_document_code",
+                    "",
+                ),
                 passenger_name=request.data["name"],
                 passenger_email=request.data["email"],
                 passenger_telephone=request.data["telephone"],
@@ -153,6 +172,10 @@ class AdminSaleView(APIView):
                 seat,
                 {
                     "identification_number": request.data["identification_number"],
+                    "identification_document_code": request.data.get(
+                        "identification_document_code",
+                        "",
+                    ),
                     "name": request.data["name"],
                     "email": request.data["email"],
                     "telephone": request.data["telephone"],
@@ -183,19 +206,90 @@ class FactusInvoiceRetryView(APIView):
         return Response(FactusInvoiceSerializer(invoice).data)
 
 
-class WompiCheckoutView(APIView):
+class SaleInvoiceView(APIView):
     permission_classes = [IsAuthenticated]
 
+    def get(self, request, sale_id):
+        sale = Sale.objects.select_related("buyer").filter(pk=sale_id).first()
+        if sale is None:
+            return Response(
+                {"detail": "La venta no existe."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        if request.user.role != "admin" and sale.buyer_id != request.user.id:
+            return Response(
+                {"detail": "No puedes consultar esta factura."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        invoice = getattr(sale, "factus_invoice", None)
+        if invoice is None:
+            return Response({
+                "sale_id": sale.id,
+                "status": "pending",
+                "detail": "La factura todavía no ha sido generada.",
+            })
+        return Response(FactusInvoiceSerializer(invoice).data)
+
+
+class WompiCheckoutView(APIView):
+    permission_classes = [IsAuthenticated]
+    max_tickets = 10
+
     def post(self, request):
+        idempotency_key = request.headers.get("Idempotency-Key", "").strip()
+        if not idempotency_key:
+            return Response(
+                {"detail": "El encabezado Idempotency-Key es obligatorio."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        existing_sale = Sale.objects.filter(
+            idempotency_key=idempotency_key,
+        ).first()
+        if existing_sale:
+            if existing_sale.buyer_id != request.user.id:
+                return Response(
+                    {"detail": "La clave de idempotencia ya está en uso."},
+                    status=status.HTTP_409_CONFLICT,
+                )
+            return self._widget_response(existing_sale, status.HTTP_200_OK)
+
+        passengers = request.data.get("passengers")
+        if passengers is None:
+            passengers = [{
+                "seat": request.data.get("seat"),
+                "name": (
+                    f"{request.user.first_name} {request.user.last_name}"
+                ).strip(),
+                "identification_document_code": (
+                    request.user.identification_document_code
+                ),
+                "identification_number": request.user.identification_number,
+                "email": request.user.email,
+                "telephone": request.user.telephone or "",
+            }]
+        if not isinstance(passengers, list) or not passengers:
+            return Response(
+                {"passengers": "Debe enviar al menos un pasajero."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if len(passengers) > self.max_tickets:
+            return Response(
+                {
+                    "passengers": (
+                        f"Una compra permite máximo {self.max_tickets} boletas."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         try:
             trip = Trip.objects.select_related("bus", "fare").get(
-                pk=request.data["trip"]
+                pk=request.data["trip"],
+                trip_state=Trip.TripState.SCHEDULED,
             )
-            seat = trip.bus.seats.get(pk=request.data["seat"])
             amount_cents = trip.fare.amount_cents
         except (
             KeyError,
-            Seat.DoesNotExist,
             Trip.DoesNotExist,
             ObjectDoesNotExist,
             ValueError,
@@ -205,61 +299,159 @@ class WompiCheckoutView(APIView):
                 {"detail": "El viaje, la silla o el valor no es válido."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        if Ticket.objects.filter(
-            trip=trip,
-            seat=seat,
-            status=Ticket.Status.ISSUED,
-        ).exists():
-            return Response(
-                {"detail": "La silla ya está vendida para este viaje."},
-                status=status.HTTP_400_BAD_REQUEST,
+
+        seats_by_id = {}
+        normalized_passengers = []
+        for passenger in passengers:
+            if not isinstance(passenger, dict):
+                return Response(
+                    {"passengers": "Cada pasajero debe ser un objeto."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            required = (
+                "seat",
+                "name",
+                "identification_number",
+                "email",
             )
+            missing = [field for field in required if not passenger.get(field)]
+            if missing:
+                return Response(
+                    {"passenger": f"Faltan campos: {', '.join(missing)}"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            try:
+                seat_id = int(passenger["seat"])
+            except (TypeError, ValueError):
+                return Response(
+                    {"seat": "El identificador de silla no es válido."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if seat_id in seats_by_id:
+                return Response(
+                    {"passengers": "No se puede repetir una silla."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            seats_by_id[seat_id] = True
+            normalized_passengers.append({
+                **passenger,
+                "seat": seat_id,
+                "telephone": passenger.get("telephone", ""),
+                "identification_document_code": passenger.get(
+                    "identification_document_code",
+                    "",
+                ),
+            })
+
         with transaction.atomic():
-            seat = trip.bus.seats.select_for_update().get(pk=seat.pk)
-            active_hold = Sale.objects.filter(
-                trip=trip,
-                seat=seat,
-                source=Sale.Source.ONLINE,
-                status=Sale.Status.PENDING,
-            ).first()
-            if active_hold:
-                if active_hold.has_active_hold():
+            User.objects.select_for_update().get(pk=request.user.pk)
+            seats = list(
+                trip.bus.seats.select_for_update().filter(
+                    pk__in=seats_by_id,
+                ).order_by("pk")
+            )
+            if len(seats) != len(normalized_passengers):
+                return Response(
+                    {"detail": "Una silla no pertenece al bus del viaje."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            seats_by_id = {seat.pk: seat for seat in seats}
+            now = timezone.now()
+            for passenger in normalized_passengers:
+                seat = seats_by_id[passenger["seat"]]
+                if Ticket.objects.filter(
+                    trip=trip,
+                    seat=seat,
+                    status=Ticket.Status.ISSUED,
+                ).exists():
                     return Response(
-                        {"detail": "La silla está reservada temporalmente."},
+                        {"detail": f"La silla {seat.seat_number} ya está vendida."},
                         status=status.HTTP_409_CONFLICT,
                     )
-                active_hold.status = Sale.Status.EXPIRED
-                active_hold.save(update_fields=["status", "updated_at"])
+                holds = Sale.objects.filter(
+                    trip=trip,
+                    seat=seat,
+                    source=Sale.Source.ONLINE,
+                    status=Sale.Status.PENDING,
+                ).select_for_update()
+                for active_hold in holds:
+                    if active_hold.expires_at and active_hold.expires_at > now:
+                        return Response(
+                            {
+                                "detail": (
+                                    f"La silla {seat.seat_number} está reservada."
+                                )
+                            },
+                            status=status.HTTP_409_CONFLICT,
+                        )
+                    active_hold.status = Sale.Status.EXPIRED
+                    active_hold.save(update_fields=["status", "updated_at"])
+
+            first = normalized_passengers[0]
             sale = Sale.objects.create(
                 buyer=request.user,
                 created_by=request.user,
                 source=Sale.Source.ONLINE,
                 payment_method=Sale.PaymentMethod.WOMPI,
-                amount_cents=amount_cents,
+                amount_cents=amount_cents * len(normalized_passengers),
                 trip=trip,
-                seat=seat,
-                passenger_identification=request.user.identification_number,
-                passenger_name=f"{request.user.first_name} {request.user.last_name}".strip(),
-                passenger_email=request.user.email,
-                passenger_telephone=request.user.telephone or "",
-                expires_at=timezone.now() + timedelta(minutes=5),
+                seat=seats_by_id[first["seat"]],
+                passenger_identification=first["identification_number"],
+                passenger_identification_document_code=first[
+                    "identification_document_code"
+                ],
+                passenger_name=first["name"],
+                passenger_email=first["email"],
+                passenger_telephone=first["telephone"],
+                expires_at=now + timedelta(minutes=5),
+                idempotency_key=idempotency_key,
             )
+            SaleItem.objects.bulk_create([
+                SaleItem(
+                    sale=sale,
+                    trip=trip,
+                    seat=seats_by_id[passenger["seat"]],
+                    passenger_identification_document_code=passenger[
+                        "identification_document_code"
+                    ],
+                    passenger_identification=passenger[
+                        "identification_number"
+                    ],
+                    passenger_name=passenger["name"],
+                    passenger_email=passenger["email"],
+                    passenger_telephone=passenger["telephone"],
+                )
+                for passenger in normalized_passengers
+            ])
         reference = f"sale-{sale.pk}"
         Payment.objects.create(
             sale=sale,
             provider="wompi",
             provider_reference=reference,
-            amount_cents=amount_cents,
+            amount_cents=sale.amount_cents,
         )
-        return Response({
-            "sale_id": sale.id,
-            "reference": reference,
-            "public_key": os.getenv("WOMPI_PUBLIC_KEY", ""),
-            "currency": "COP",
-            "amount_in_cents": amount_cents,
-            "signature_integrity": wompi_integrity_signature(reference, amount_cents),
-            "redirect_url": request.data.get("redirect_url", ""),
-        }, status=status.HTTP_201_CREATED)
+        return self._widget_response(sale, status.HTTP_201_CREATED)
+
+    def _widget_response(self, sale, response_status):
+        payment = sale.payment
+        return Response(
+            {
+                "sale_id": sale.id,
+                "reference": payment.provider_reference,
+                "public_key": os.getenv("WOMPI_PUBLIC_KEY", ""),
+                "currency": "COP",
+                "amount_in_cents": sale.amount_cents,
+                "signature_integrity": wompi_integrity_signature(
+                    payment.provider_reference,
+                    sale.amount_cents,
+                ),
+                "redirect_url": self.request.data.get("redirect_url", ""),
+                "expires_at": sale.expires_at,
+                "server_time": timezone.now(),
+                "quantity": sale.quantity,
+            },
+            status=response_status,
+        )
 
 
 class WompiWebhookView(APIView):

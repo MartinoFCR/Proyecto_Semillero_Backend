@@ -50,10 +50,21 @@ class Sale(models.Model):
     trip = models.ForeignKey(Trip, on_delete=models.PROTECT)
     seat = models.ForeignKey(Seat, on_delete=models.PROTECT)
     passenger_identification = models.CharField(max_length=20)
+    passenger_identification_document_code = models.CharField(
+        max_length=2,
+        blank=True,
+        default="",
+    )
     passenger_name = models.CharField(max_length=150)
     passenger_email = models.EmailField(max_length=50)
     passenger_telephone = models.CharField(max_length=20, blank=True)
     expires_at = models.DateTimeField(blank=True, null=True)
+    idempotency_key = models.CharField(
+        max_length=120,
+        unique=True,
+        blank=True,
+        null=True,
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -64,6 +75,37 @@ class Sale(models.Model):
             and self.expires_at is not None
             and self.expires_at > timezone.now()
         )
+
+    @property
+    def quantity(self):
+        return self.items.count() or 1
+
+
+class SaleItem(models.Model):
+    sale = models.ForeignKey(
+        Sale,
+        on_delete=models.CASCADE,
+        related_name="items",
+    )
+    trip = models.ForeignKey(Trip, on_delete=models.PROTECT)
+    seat = models.ForeignKey(Seat, on_delete=models.PROTECT)
+    passenger_identification = models.CharField(max_length=20)
+    passenger_identification_document_code = models.CharField(
+        max_length=2,
+        blank=True,
+        default="",
+    )
+    passenger_name = models.CharField(max_length=150)
+    passenger_email = models.EmailField(max_length=50)
+    passenger_telephone = models.CharField(max_length=20, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("sale", "seat"),
+                name="unique_sale_item_seat",
+            ),
+        ]
 
 
 class Payment(models.Model):
@@ -126,6 +168,11 @@ class Ticket(models.Model):
     trip = models.ForeignKey(Trip, on_delete=models.PROTECT)
     seat = models.ForeignKey(Seat, on_delete=models.PROTECT)
     passenger_identification = models.CharField(max_length=20)
+    passenger_identification_document_code = models.CharField(
+        max_length=2,
+        blank=True,
+        default="",
+    )
     passenger_name = models.CharField(max_length=150)
     passenger_email = models.EmailField(max_length=50)
     passenger_telephone = models.CharField(max_length=20, blank=True)

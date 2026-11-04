@@ -1,0 +1,257 @@
+from unittest.mock import patch
+
+from django.contrib.auth import get_user_model
+from django.contrib.gis.geos import Point
+from django.urls import reverse
+from rest_framework.test import APITestCase
+
+from DjangoProject1.apps.fleet.models import Bus, Seat
+from DjangoProject1.apps.geography.models import City, Department, Place
+from DjangoProject1.apps.routes.models import Route
+from DjangoProject1.apps.sales.models import (
+    FactusInvoice,
+    Sale,
+    SaleItem,
+    Ticket,
+)
+from DjangoProject1.apps.sales.services import mark_sale_paid
+from DjangoProject1.apps.trips.models import Trip, TripFare
+
+
+class MultiTicketCheckoutTests(APITestCase):
+    def setUp(self):
+        user_model = get_user_model()
+        self.user = user_model.objects.create_user(
+            username="buyer",
+            password="secret-pass-123",
+            email="buyer@example.com",
+            identification_number="100000001",
+            first_name="Buyer",
+            role=user_model.Role.CLIENT,
+        )
+        department = Department.objects.create(department_name="Santander")
+        city = City.objects.create(
+            city_name="Bucaramanga",
+            department=department,
+        )
+        origin = Place.objects.create(
+            place_name="Terminal Norte",
+            city=city,
+            place_point=Point(-73.12, 7.12),
+        )
+        destination = Place.objects.create(
+            place_name="Terminal Sur",
+            city=city,
+            place_point=Point(-73.11, 7.11),
+        )
+        route = Route.objects.create(
+            origin=origin,
+            destination=destination,
+            distance_km="10.00",
+        )
+        self.bus = Bus.objects.create(
+            plate="ABC123",
+            capacity=2,
+            model="Test",
+        )
+        self.seats = [
+            Seat.objects.create(
+                bus=self.bus,
+                seat_number=str(index),
+                row="1",
+                col=str(index),
+            )
+            for index in (1, 2)
+        ]
+        driver_user = user_model.objects.create_user(
+            username="driver",
+            password="secret-pass-123",
+            email="driver@example.com",
+            identification_number="100000002",
+            role=user_model.Role.DRIVER,
+        )
+        from DjangoProject1.apps.fleet.models import Driver
+
+        driver = Driver.objects.create(
+            user=driver_user,
+            full_name="Test Driver",
+            license_number="LIC-1",
+            address="Test address",
+            phone_number="3000000000",
+        )
+        self.trip = Trip.objects.create(
+            bus=self.bus,
+            driver=driver,
+            route=route,
+            trip_state=Trip.TripState.SCHEDULED,
+        )
+        TripFare.objects.create(trip=self.trip, amount_cents=2500000)
+        self.client.force_authenticate(self.user)
+
+    @patch(
+        "DjangoProject1.apps.sales.views.wompi_integrity_signature",
+        return_value="signature",
+    )
+    def test_checkout_creates_one_sale_for_multiple_passengers(self, _signature):
+        response = self.client.post(
+            reverse("wompi-checkout"),
+            {
+                "trip": self.trip.id,
+                "passengers": [
+                    {
+                        "seat": self.seats[0].id,
+                        "name": "Ana",
+                        "identification_document_code": "13",
+                        "identification_number": "200000001",
+                        "email": "ana@example.com",
+                    },
+                    {
+                        "seat": self.seats[1].id,
+                        "name": "Luis",
+                        "identification_document_code": "13",
+                        "identification_number": "200000002",
+                        "email": "luis@example.com",
+                    },
+                ],
+            },
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="checkout-1",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["quantity"], 2)
+        self.assertEqual(response.data["amount_in_cents"], 5000000)
+        self.assertEqual(Sale.objects.count(), 1)
+        self.assertEqual(SaleItem.objects.count(), 2)
+
+    @patch(
+        "DjangoProject1.apps.sales.views.wompi_integrity_signature",
+        return_value="signature",
+    )
+    def test_repeated_idempotency_key_returns_same_sale(self, _signature):
+        payload = {
+            "trip": self.trip.id,
+            "passengers": [{
+                "seat": self.seats[0].id,
+                "name": "Ana",
+                "identification_number": "200000001",
+                "email": "ana@example.com",
+            }],
+        }
+        first = self.client.post(
+            reverse("wompi-checkout"),
+            payload,
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="checkout-2",
+        )
+        second = self.client.post(
+            reverse("wompi-checkout"),
+            payload,
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="checkout-2",
+        )
+
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(first.data["sale_id"], second.data["sale_id"])
+        self.assertEqual(Sale.objects.count(), 1)
+
+    def test_duplicate_seat_is_rejected(self):
+        response = self.client.post(
+            reverse("wompi-checkout"),
+            {
+                "trip": self.trip.id,
+                "passengers": [
+                    {
+                        "seat": self.seats[0].id,
+                        "name": "Ana",
+                        "identification_number": "200000001",
+                        "email": "ana@example.com",
+                    },
+                    {
+                        "seat": self.seats[0].id,
+                        "name": "Luis",
+                        "identification_number": "200000002",
+                        "email": "luis@example.com",
+                    },
+                ],
+            },
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="checkout-3",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(Sale.objects.count(), 0)
+
+    def test_seat_catalog_is_public(self):
+        self.client.force_authenticate(None)
+        response = self.client.get(
+            reverse("trip-seats", kwargs={"trip_id": self.trip.id}),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["seats"][0]["status"], "available")
+
+    @patch("DjangoProject1.apps.sales.services.issue_factus_invoice")
+    def test_approved_payment_issues_each_ticket_only_once(self, _invoice):
+        sale = Sale.objects.create(
+            buyer=self.user,
+            created_by=self.user,
+            source=Sale.Source.ONLINE,
+            payment_method=Sale.PaymentMethod.WOMPI,
+            amount_cents=5000000,
+            trip=self.trip,
+            seat=self.seats[0],
+            passenger_identification="200000001",
+            passenger_name="Ana",
+            passenger_email="ana@example.com",
+        )
+        SaleItem.objects.create(
+            sale=sale,
+            trip=self.trip,
+            seat=self.seats[0],
+            passenger_identification="200000001",
+            passenger_name="Ana",
+            passenger_email="ana@example.com",
+        )
+        SaleItem.objects.create(
+            sale=sale,
+            trip=self.trip,
+            seat=self.seats[1],
+            passenger_identification="200000002",
+            passenger_name="Luis",
+            passenger_email="luis@example.com",
+        )
+
+        mark_sale_paid(sale, "APPROVED", "wompi-ref", {})
+        mark_sale_paid(sale, "APPROVED", "wompi-ref", {})
+
+        self.assertEqual(Ticket.objects.filter(sale=sale).count(), 2)
+
+    def test_invoice_is_not_visible_to_another_buyer(self):
+        other = get_user_model().objects.create_user(
+            username="other",
+            password="secret-pass-123",
+            email="other@example.com",
+            identification_number="100000003",
+            role=get_user_model().Role.CLIENT,
+        )
+        sale = Sale.objects.create(
+            buyer=other,
+            created_by=other,
+            source=Sale.Source.ONLINE,
+            payment_method=Sale.PaymentMethod.WOMPI,
+            amount_cents=2500000,
+            trip=self.trip,
+            seat=self.seats[0],
+            passenger_identification="200000003",
+            passenger_name="Other",
+            passenger_email="other@example.com",
+        )
+        FactusInvoice.objects.create(sale=sale)
+
+        response = self.client.get(
+            reverse("sale-invoice", kwargs={"sale_id": sale.id}),
+        )
+
+        self.assertEqual(response.status_code, 403)

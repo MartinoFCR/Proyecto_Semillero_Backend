@@ -1,6 +1,6 @@
 
 from rest_framework import status
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -80,7 +80,7 @@ class TripFareViewSet(ModelViewSet):
 
 
 class AvailableSeatsView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AllowAny]
 
     def get(self, request, trip_id):
         try:
@@ -94,6 +94,16 @@ class AvailableSeatsView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
+        now = timezone.now()
+        Sale.objects.filter(
+            trip=trip,
+            source=Sale.Source.ONLINE,
+            status=Sale.Status.PENDING,
+            expires_at__lte=now,
+        ).update(
+            status=Sale.Status.EXPIRED,
+            updated_at=now,
+        )
         issued_seats = set(
             Ticket.objects.filter(
                 trip=trip,
@@ -107,18 +117,6 @@ class AvailableSeatsView(APIView):
                 status=Sale.Status.PENDING,
             ).values_list("seat_id", flat=True)
         )
-        now = timezone.now()
-        expired_holds = Sale.objects.filter(
-            trip=trip,
-            source=Sale.Source.ONLINE,
-            status=Sale.Status.PENDING,
-            expires_at__lte=now,
-        )
-        expired_holds.update(
-            status=Sale.Status.EXPIRED,
-            updated_at=now,
-        )
-
         seats = []
         for seat in trip.bus.seats.all().order_by("seat_number"):
             if seat.id in issued_seats:
@@ -136,6 +134,7 @@ class AvailableSeatsView(APIView):
             })
         return Response({
             "trip": trip.id,
+            "server_time": now,
             "seats": seats,
         })
 

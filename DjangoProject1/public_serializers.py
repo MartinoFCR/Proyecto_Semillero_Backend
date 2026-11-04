@@ -32,6 +32,7 @@ class PublicRouteSerializer(serializers.ModelSerializer):
 class PublicTripSerializer(serializers.ModelSerializer):
     route = PublicRouteSerializer()
     fare_amount_cents = serializers.SerializerMethodField()
+    currency = serializers.SerializerMethodField()
 
     class Meta:
         model = Trip
@@ -42,8 +43,12 @@ class PublicTripSerializer(serializers.ModelSerializer):
             "date_time_end",
             "trip_state",
             "fare_amount_cents",
+            "currency",
         )
 
     def get_fare_amount_cents(self, trip):
         fare = getattr(trip, "fare", None)
         return fare.amount_cents if fare else None
+
+    def get_currency(self, trip):
+        return "COP"

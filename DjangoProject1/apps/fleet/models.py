@@ -2,6 +2,20 @@ from django.db import models
 from django.conf import settings
 
 # Create your models here.
+class BusType(models.Model):
+    name = models.CharField(max_length=80, unique=True)
+    code = models.SlugField(max_length=40, unique=True)
+    max_capacity = models.PositiveIntegerField()
+
+    class Meta:
+        verbose_name = "Tipo de bus"
+        verbose_name_plural = "Tipos de bus"
+        ordering = ["name"]
+
+    def __str__(self):
+        return self.name
+
+
 class Bus(models.Model):
     class State(models.TextChoices):
         ACTIVE = 'Active', 'Activo'
@@ -11,6 +25,13 @@ class Bus(models.Model):
     plate = models.CharField(max_length=10, null=False, unique=True)
     capacity = models.IntegerField()
     model = models.CharField(max_length=50)
+    bus_type = models.ForeignKey(
+        BusType,
+        on_delete=models.PROTECT,
+        related_name="buses",
+        null=True,
+        blank=True,
+    )
     state = models.CharField(max_length=20, choices=State.choices, default=State.ACTIVE)
 
     class Meta:
@@ -55,4 +76,3 @@ class Seat(models.Model):
         ]
     def __str__(self):
         return f'Asiento {self.seat_number} - Bus {self.bus}'
-
