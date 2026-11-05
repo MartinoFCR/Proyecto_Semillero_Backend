@@ -1,13 +1,32 @@
 from rest_framework import serializers
 
 from .models import FactusInvoice, Payment, Sale, SaleItem, Ticket
+from .ticket_verification import ticket_verification_token, ticket_verification_url
 
 
 class TicketSerializer(serializers.ModelSerializer):
+    verification_token = serializers.SerializerMethodField()
+    verification_url = serializers.SerializerMethodField()
+
     class Meta:
         model = Ticket
         fields = "__all__"
-        read_only_fields = ("ticket_code", "issued_at", "status")
+        read_only_fields = (
+            "ticket_code",
+            "issued_at",
+            "status",
+            "verification_token",
+            "verification_url",
+        )
+
+    def get_verification_token(self, ticket):
+        return ticket_verification_token(ticket)
+
+    def get_verification_url(self, ticket):
+        request = self.context.get("request")
+        if request is None:
+            return None
+        return ticket_verification_url(ticket, request)
 
 
 class SaleItemSerializer(serializers.ModelSerializer):

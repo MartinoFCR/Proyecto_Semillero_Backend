@@ -3,6 +3,7 @@ from datetime import timedelta
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ObjectDoesNotExist
+from django.core import signing
 from django.db import transaction
 from django.utils import timezone
 from rest_framework import status
@@ -28,6 +29,7 @@ from .services import (
     validate_wompi_event_signature,
     wompi_integrity_signature,
 )
+from .ticket_verification import get_ticket_from_verification_token
 
 User = get_user_model()
 
@@ -56,6 +58,49 @@ class TicketViewSet(ReadOnlyModelViewSet):
         if self.request.user.role == "admin":
             return queryset
         return queryset.filter(sale__buyer=self.request.user)
+
+
+class TicketVerificationView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        token = request.query_params.get("token", "").strip()
+        if not token:
+            return Response(
+                {"valid": False, "detail": "El token es obligatorio."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            ticket = get_ticket_from_verification_token(token)
+        except (
+            signing.BadSignature,
+            signing.SignatureExpired,
+            Ticket.DoesNotExist,
+        ):
+            return Response(
+                {"valid": False, "detail": "El tiquete no es válido."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        return Response({
+            "valid": ticket.status == Ticket.Status.ISSUED,
+            "status": ticket.status,
+            "ticket_code": str(ticket.ticket_code),
+            "trip": {
+                "id": ticket.trip_id,
+                "origin": ticket.trip.route.origin.place_name,
+                "destination": ticket.trip.route.destination.place_name,
+                "date_time_start": ticket.trip.date_time_start,
+                "date_time_end": ticket.trip.date_time_end,
+            },
+            "passenger": {
+                "name": ticket.passenger_name,
+                "identification_number": ticket.passenger_identification,
+            },
+            "seat": {
+                "id": ticket.seat_id,
+                "seat_number": ticket.seat.seat_number,
+            },
+        })
 
 
 class AdminSaleView(APIView):

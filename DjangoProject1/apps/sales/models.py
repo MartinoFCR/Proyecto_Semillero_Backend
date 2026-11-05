@@ -158,6 +158,7 @@ class FactusInvoice(models.Model):
 class Ticket(models.Model):
     class Status(models.TextChoices):
         ISSUED = "issued", "Emitido"
+        USED = "used", "Utilizado"
         CANCELLED = "cancelled", "Cancelado"
 
     sale = models.ForeignKey(

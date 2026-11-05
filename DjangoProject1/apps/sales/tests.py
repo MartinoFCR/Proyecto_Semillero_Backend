@@ -15,6 +15,7 @@ from DjangoProject1.apps.sales.models import (
     Ticket,
 )
 from DjangoProject1.apps.sales.services import mark_sale_paid
+from DjangoProject1.apps.sales.ticket_verification import ticket_verification_token
 from DjangoProject1.apps.trips.models import Trip, TripFare
 
 
@@ -255,3 +256,44 @@ class MultiTicketCheckoutTests(APITestCase):
         )
 
         self.assertEqual(response.status_code, 403)
+
+    def test_ticket_qr_token_can_be_verified_without_session(self):
+        sale = Sale.objects.create(
+            buyer=self.user,
+            created_by=self.user,
+            source=Sale.Source.ONLINE,
+            payment_method=Sale.PaymentMethod.WOMPI,
+            amount_cents=2500000,
+            trip=self.trip,
+            seat=self.seats[0],
+            passenger_identification="200000001",
+            passenger_name="Ana",
+            passenger_email="ana@example.com",
+        )
+        ticket = Ticket.objects.create(
+            sale=sale,
+            trip=self.trip,
+            seat=self.seats[0],
+            passenger_identification="200000001",
+            passenger_name="Ana",
+            passenger_email="ana@example.com",
+        )
+        self.client.force_authenticate(None)
+
+        ticket_response = self.client.get("/api/sales/tickets/verify/", {
+            "token": ticket_verification_token(ticket),
+        })
+
+        self.assertEqual(ticket_response.status_code, 200)
+        self.assertTrue(ticket_response.data["valid"])
+        self.assertEqual(ticket_response.data["status"], "issued")
+        self.assertEqual(ticket_response.data["ticket_code"], str(ticket.ticket_code))
+
+        ticket.status = Ticket.Status.USED
+        ticket.save(update_fields=["status"])
+        used_response = self.client.get("/api/sales/tickets/verify/", {
+            "token": ticket_verification_token(ticket),
+        })
+        self.assertEqual(used_response.status_code, 200)
+        self.assertFalse(used_response.data["valid"])
+        self.assertEqual(used_response.data["status"], "used")

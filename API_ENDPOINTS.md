@@ -706,6 +706,50 @@ GET /api/sales/tickets/{id}/
 Un administrador puede consultar todos los tiquetes. Un cliente solo puede
 consultar los tiquetes de sus propias ventas. Los tiquetes son de solo lectura.
 
+Cada tiquete incluye `verification_token` y `verification_url`. Angular puede
+usar `verification_url` como contenido del QR al generar el PDF.
+
+Para descargar las boletas, el frontend debe generar un PDF desde el detalle
+de la compra, con una página por tiquete. Cada página debe mostrar el viaje,
+terminales, horario, pasajero, silla, `ticket_code` y el QR.
+
+El QR no debe contener el JWT ni confiar únicamente en `ticket_code`.
+
+### Verificar un tiquete
+
+```http
+GET /api/sales/tickets/verify/?token=VERIFICATION_TOKEN
+```
+
+No requiere autenticación. La respuesta confirma si el tiquete existe y
+devuelve su estado: `issued`, `used` o `cancelled`.
+
+```json
+{
+  "valid": true,
+  "status": "issued",
+  "ticket_code": "uuid-del-tiquete",
+  "trip": {
+    "id": 15,
+    "origin": "Terminal Norte",
+    "destination": "Terminal Sur",
+    "date_time_start": "2026-11-04T20:00:00-05:00",
+    "date_time_end": null
+  },
+  "passenger": {
+    "name": "Ana Pérez",
+    "identification_number": "100000001"
+  },
+  "seat": {
+    "id": 5,
+    "seat_number": "01"
+  }
+}
+```
+
+`valid` solo es `true` para tiquetes `issued`. Un tiquete `used` o
+`cancelled` continúa identificándose, pero no es válido para abordar.
+
 ### Venta administrativa
 
 Solo administradores:

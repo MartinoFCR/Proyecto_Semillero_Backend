@@ -5,6 +5,7 @@ from .views import (
     AdminSaleView,
     FactusInvoiceRetryView,
     SaleInvoiceView,
+    TicketVerificationView,
     SaleViewSet,
     TicketViewSet,
     WompiCheckoutView,
@@ -16,7 +17,12 @@ router = DefaultRouter()
 router.register("sales", SaleViewSet, basename="sale")
 router.register("tickets", TicketViewSet, basename="ticket")
 
-urlpatterns = router.urls + [
+urlpatterns = [
+    path(
+        "tickets/verify/",
+        TicketVerificationView.as_view(),
+        name="ticket-verify",
+    ),
     path("admin-sales/", AdminSaleView.as_view(), name="admin-sale"),
     path(
         "factus/invoices/<int:sale_id>/retry/",
@@ -35,4 +41,4 @@ urlpatterns = router.urls + [
         name="wompi-status",
     ),
     path("wompi/webhook/", WompiWebhookView.as_view(), name="wompi-webhook"),
-]
+] + router.urls
