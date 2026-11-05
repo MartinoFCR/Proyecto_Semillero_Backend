@@ -1,4 +1,5 @@
 from django.core import signing
+from django.conf import settings
 from django.urls import reverse
 
 from .models import Ticket
@@ -22,7 +23,7 @@ def ticket_verification_url(ticket, request):
 def get_ticket_from_verification_token(token):
     code = signing.TimestampSigner(
         salt=TICKET_TOKEN_SALT,
-    ).unsign(token)
+    ).unsign(token, max_age=settings.TICKET_VERIFICATION_MAX_AGE_SECONDS)
     return Ticket.objects.select_related(
         "trip__route__origin",
         "trip__route__destination",

@@ -14,6 +14,7 @@ from DjangoProject1.apps.accounts.views import (
     AccountActivationRequestView,
     AccountActionConfirmView,
     PasswordChangeView,
+    LogoutView,
     UserViewSet,
 )
 
@@ -40,6 +41,7 @@ urlpatterns = router.urls + [
     ),
     path("me/", ProfileView.as_view(), name="profile"),
     path("me/password/", PasswordChangeView.as_view(), name="password-change"),
+    path("logout/", LogoutView.as_view(), name="logout"),
     path("me/photo/", ProfilePhotoView.as_view(), name="profile-photo"),
     path("me/card/", DigitalCardView.as_view(), name="digital-card"),
     path("cards/verify/", CardVerifyView.as_view(), name="card-verify"),

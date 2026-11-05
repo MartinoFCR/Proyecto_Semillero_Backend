@@ -67,3 +67,9 @@ class AccountActionToken(models.Model):
         indexes = [
             models.Index(fields=("user", "purpose", "created_at")),
         ]
+
+
+class LoginAttempt(models.Model):
+    key = models.CharField(max_length=255, unique=True)
+    window_started_at = models.DateTimeField()
+    failures = models.PositiveSmallIntegerField(default=0)

@@ -1,11 +1,14 @@
 import hashlib
 import secrets
+import uuid
+from io import BytesIO
 from datetime import timedelta
 
 from django.conf import settings
 from django.core import signing
 from django.core.cache import cache
 from django.core.mail import send_mail
+from django.core.files.base import ContentFile
 from smtplib import SMTPException
 from django.contrib.auth import password_validation
 from django.core.exceptions import ValidationError as DjangoValidationError
@@ -18,6 +21,8 @@ from rest_framework import status
 from rest_framework.views import APIView
 from rest_framework.viewsets import ModelViewSet
 from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework_simplejwt.tokens import RefreshToken, TokenError
+from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, OutstandingToken
 
 from DjangoProject1.apps.accounts.models import AccountActionToken, User
 from DjangoProject1.apps.accounts.serializers import (
@@ -281,6 +286,7 @@ class AccountActionConfirmView(APIView):
                 "password_change_required",
                 "is_active",
             ])
+            revoke_user_refresh_tokens(user)
             action.used_at = timezone.now()
             action.save(update_fields=["used_at"])
             AccountActionToken.objects.filter(
@@ -321,10 +327,39 @@ class PasswordChangeView(APIView):
             "password_changed_at",
             "password_change_required",
         ])
+        revoke_user_refresh_tokens(user)
         return Response({
             "detail": "Contraseña actualizada. Inicia sesión nuevamente.",
             "reauthentication_required": True,
         })
+
+
+class LogoutView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        raw_refresh = request.data.get("refresh")
+        if not raw_refresh:
+            return Response(
+                {"refresh": ["Este campo es obligatorio."]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            refresh = RefreshToken(raw_refresh)
+            if str(refresh.get("user_id")) != str(request.user.pk):
+                raise TokenError("El refresh token no pertenece al usuario.")
+            refresh.blacklist()
+        except TokenError:
+            return Response(
+                {"code": "invalid_refresh_token", "detail": "El refresh token no es válido."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+def revoke_user_refresh_tokens(user):
+    for token in OutstandingToken.objects.filter(user=user):
+        BlacklistedToken.objects.get_or_create(token=token)
 
 
 class ProfileView(APIView):
@@ -392,11 +427,27 @@ class ProfilePhotoView(APIView):
                 {"photo": "Las dimensiones máximas son 2000 x 2000 píxeles."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        old_photo = request.user.photo
-        request.user.photo = photo
+        photo.seek(0)
+        image = Image.open(photo)
+        output = BytesIO()
+        extension = {
+            "JPEG": ("jpg", "JPEG"),
+            "PNG": ("png", "PNG"),
+            "WEBP": ("webp", "WEBP"),
+        }[image_format]
+        if image_format == "JPEG" and image.mode not in {"RGB", "L"}:
+            image = image.convert("RGB")
+        image.save(output, format=extension[1], optimize=True)
+        output.seek(0)
+        old_photo_name = request.user.photo.name if request.user.photo else None
+        request.user.photo.save(
+            f"{uuid.uuid4().hex}.{extension[0]}",
+            ContentFile(output.read()),
+            save=False,
+        )
         request.user.save(update_fields=["photo"])
-        if old_photo and old_photo.name != request.user.photo.name:
-            old_photo.delete(save=False)
+        if old_photo_name:
+            request.user.photo.storage.delete(old_photo_name)
         return Response(
             ProfileSerializer(
                 request.user,
@@ -417,9 +468,9 @@ class DigitalCardView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        token = signing.TimestampSigner(
-            salt="client-card",
-        ).sign(str(request.user.card_id))
+        token = signing.Signer(salt="client-card").sign(
+            str(request.user.card_id)
+        )
         verification_url = request.build_absolute_uri(
             reverse("card-verify"),
         )
@@ -449,20 +500,21 @@ class CardVerifyView(APIView):
     def get(self, request):
         token = request.query_params.get("token", "")
         try:
-            card_id = signing.TimestampSigner(
-                salt="client-card",
-            ).unsign(token, max_age=365 * 24 * 60 * 60)
+            card_id = signing.Signer(salt="client-card").unsign(token)
             user = User.objects.get(card_id=card_id)
         except (signing.BadSignature, signing.SignatureExpired, User.DoesNotExist):
             return Response(
                 {"valid": False, "detail": "El carné no es válido."},
                 status=status.HTTP_404_NOT_FOUND,
             )
-        return Response({
+        response = Response({
             "valid": user.is_active,
             "card_id": str(user.card_id),
-            "name": f"{user.first_name} {user.last_name}".strip(),
+            "name": user.first_name,
             "status": "active" if user.is_active else "revoked",
             "valid_until": None,
             "validity": "indefinite_while_active",
         })
+        response["Cache-Control"] = "no-store"
+        response["Pragma"] = "no-cache"
+        return response

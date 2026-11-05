@@ -13,6 +13,26 @@ class IsAdminRole(BasePermission):
         )
 
 
+class PasswordChangeRequiredPermission(BasePermission):
+    allowed_paths = (
+        "/api/accounts/me/",
+        "/api/accounts/me/password/",
+        "/api/accounts/me/photo/",
+        "/api/accounts/me/card/",
+        "/api/accounts/logout/",
+    )
+
+    def has_permission(self, request, view):
+        user = request.user
+        if not user or not user.is_authenticated:
+            return False
+        if user.role == "admin" or not user.password_change_required:
+            return True
+        return request.path.rstrip("/") in {
+            path.rstrip("/") for path in self.allowed_paths
+        }
+
+
 class IsAdminOrReadOnly(BasePermission):
     """Todos los autenticados pueden leer; admin puede modificar."""
 
@@ -24,6 +44,21 @@ class IsAdminOrReadOnly(BasePermission):
             return True
 
         return request.user.role == "admin"
+
+
+class IsAdminOrOwnDriver(BasePermission):
+    def has_permission(self, request, view):
+        return bool(
+            request.user
+            and request.user.is_authenticated
+            and request.user.role in {"admin", "driver"}
+        )
+
+    def has_object_permission(self, request, view, obj):
+        return (
+            request.user.role == "admin"
+            or getattr(obj, "user_id", None) == request.user.id
+        )
 
 
 class IsAdminOrAssignedDriver(BasePermission):

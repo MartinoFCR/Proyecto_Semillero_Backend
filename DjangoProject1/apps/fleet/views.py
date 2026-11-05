@@ -8,7 +8,7 @@ from DjangoProject1.apps.fleet.serializers import (
     DriverSerializer,
     SeatSerializer,
 )
-from DjangoProject1.permissions import IsAdminOrReadOnly
+from DjangoProject1.permissions import IsAdminOrReadOnly, IsAdminOrOwnDriver
 
 
 class BusViewSet(ModelViewSet):
@@ -26,7 +26,13 @@ class BusTypeViewSet(ModelViewSet):
 class DriverViewSet(ModelViewSet):
     queryset = Driver.objects.select_related("user").all()
     serializer_class = DriverSerializer
-    permission_classes = [IsAdminOrReadOnly]
+    permission_classes = [IsAdminOrOwnDriver]
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        if self.request.user.role == "admin":
+            return queryset
+        return queryset.filter(user=self.request.user)
 
 
 class SeatViewSet(ModelViewSet):

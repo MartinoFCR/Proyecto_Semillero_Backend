@@ -104,6 +104,9 @@ CHANGES_POLICY_URL=https://portalbic.site/politicas/cambios
 REFUNDS_POLICY_URL=https://portalbic.site/politicas/reembolsos
 PRIVACY_POLICY_URL=https://portalbic.site/politicas/privacidad
 TERMS_URL=https://portalbic.site/terminos
+TICKET_VERIFICATION_MAX_AGE_SECONDS=2592000
+LOGIN_FAILURE_LIMIT=5
+LOGIN_FAILURE_WINDOW_SECONDS=900
 ```
 
 Las fotos se guardan dentro de `MEDIA_ROOT/profile_photos/` y `/media/` se
@@ -117,6 +120,11 @@ tener un volumen equivalente a:
 volumes:
   - ./backend/media:/app/media
 ```
+
+En producción `SECRET_KEY` es obligatoria; Django no inicia si falta o conserva
+el valor de ejemplo. Los límites de login usan la base de datos compartida.
+El caché de recuperación, activación y soporte usa `django_cache`, por lo que
+debe crearse con `createcachetable` después de migrar.
 
 En este despliegue Compose se ejecuta desde `/home/devadhan/semillero`, por
 lo que el archivo `docker-compose.yml` está usando:
@@ -154,6 +162,7 @@ producción. Por ejemplo:
 
 ```bash
 docker exec semillero-backend python3 manage.py migrate
+docker exec semillero-backend python3 manage.py createcachetable django_cache
 docker exec semillero-backend python3 manage.py showmigrations accounts sales fleet
 docker compose restart backend
 ```
@@ -557,6 +566,21 @@ location /media/ {
     try_files $uri =404;
 }
 ```
+
+En el mismo bloque HTTPS se recomienda configurar estos encabezados para el
+portal y la API. Ajusta la CSP si Wompi o Angular requieren orígenes externos:
+
+```nginx
+add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
+add_header X-Content-Type-Options "nosniff" always;
+add_header X-Frame-Options "DENY" always;
+add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()" always;
+add_header Content-Security-Policy "default-src 'self'; frame-ancestors 'none'; base-uri 'self'; object-src 'none'" always;
+```
+
+Prueba el Widget de Wompi antes de activar una CSP restrictiva, porque el pago
+puede requerir dominios externos autorizados.
 
 El `alias` debe terminar en `/` y debe apuntar a la carpeta del host, no a
 `/app/media`, porque Nginx se ejecuta fuera del contenedor. No debe existir otro

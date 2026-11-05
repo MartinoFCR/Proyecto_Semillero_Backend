@@ -9,6 +9,7 @@ from PIL import Image
 from rest_framework.test import APITestCase
 
 from .serializers import CustomerSerializer
+from .models import LoginAttempt
 
 
 class ClientProfileTests(APITestCase):
@@ -21,6 +22,9 @@ class ClientProfileTests(APITestCase):
             first_name="Client",
             role=get_user_model().Role.CLIENT,
         )
+        self.user.set_password("testpass123")
+        self.user.is_active = True
+        self.user.save(update_fields=["password", "is_active"])
         self.client.force_authenticate(self.user)
 
     def test_profile_photo_and_card_verification(self):
@@ -141,3 +145,68 @@ class ClientProfileTests(APITestCase):
         self.assertTrue(customer.is_active)
         self.assertTrue(customer.check_password("900000003"))
         self.assertTrue(customer.password_change_required)
+
+    def test_password_change_required_is_enforced_by_api(self):
+        user_model = get_user_model()
+        customer = user_model.objects.create_user(
+            username="temporary-customer",
+            password="900000004",
+            email="temporary@example.com",
+            identification_number="900000004",
+            role=user_model.Role.CLIENT,
+            password_change_required=True,
+        )
+        self.client.force_authenticate(user=None)
+        login = self.client.post(
+            "/api/token/",
+            {"username": customer.email, "password": "900000004"},
+            format="json",
+        )
+        self.assertEqual(login.status_code, 200)
+        self.client.credentials(
+            HTTP_AUTHORIZATION=f"Bearer {login.data['access']}",
+        )
+        blocked = self.client.get("/api/sales/sales/")
+        self.assertEqual(blocked.status_code, 401)
+        allowed = self.client.get("/api/accounts/me/")
+        self.assertEqual(allowed.status_code, 200)
+
+    def test_logout_revokes_refresh_token(self):
+        LoginAttempt.objects.all().delete()
+        login = self.client.post(
+            "/api/token/",
+            {"username": self.user.email, "password": "testpass123"},
+            format="json",
+        )
+        self.assertEqual(login.status_code, 200)
+        self.client.credentials(
+            HTTP_AUTHORIZATION=f"Bearer {login.data['access']}",
+        )
+        logout = self.client.post(
+            "/api/accounts/logout/",
+            {"refresh": login.data["refresh"]},
+            format="json",
+        )
+        self.assertEqual(logout.status_code, 204)
+        refresh = self.client.post(
+            "/api/token/refresh/",
+            {"refresh": login.data["refresh"]},
+            format="json",
+        )
+        self.assertEqual(refresh.status_code, 401)
+
+    def test_login_throttle_uses_shared_database_records(self):
+        LoginAttempt.objects.all().delete()
+        for _ in range(5):
+            response = self.client.post(
+                "/api/token/",
+                {"username": self.user.email, "password": "wrong-password"},
+                format="json",
+            )
+            self.assertEqual(response.status_code, 401)
+        blocked = self.client.post(
+            "/api/token/",
+            {"username": self.user.email, "password": "wrong-password"},
+            format="json",
+        )
+        self.assertEqual(blocked.status_code, 429)

@@ -23,7 +23,27 @@ Las respuestas usan JSON. Los identificadores (`id`) son enteros. Las
 respuestas de listados de Django REST Framework pueden tener paginación si se
 configura globalmente en el entorno.
 
+Las cuentas con `password_change_required: true` solo pueden consultar su
+perfil mínimo, cambiar contraseña, gestionar su foto/carné y cerrar sesión.
+El resto de endpoints protegidos responde `401/403` hasta completar el cambio.
+
 ## 1.2. Cuenta, recuperación y activación
+
+### Cerrar sesión
+
+```http
+POST /api/accounts/logout/
+Authorization: Bearer ACCESS_TOKEN
+```
+
+Body:
+
+```json
+{"refresh": "REFRESH_TOKEN"}
+```
+
+Responde `204 No Content` y revoca el refresh token. Los refresh tokens se
+rotan y el anterior deja de ser válido después de una renovación.
 
 ### Solicitar recuperación de contraseña
 
@@ -272,6 +292,11 @@ identifica al cliente, pero no sustituye un tiquete ni acredita una compra.
 La vigencia es indefinida mientras la cuenta esté activa: la respuesta
 devuelve `valid_until: null` y `validity: "indefinite_while_active"`. Si la
 cuenta se desactiva, el estado del carné pasa a `revoked`.
+
+Los QR de tiquetes son verificables, no consumibles: la consulta no cambia
+`issued` a `used`. El token vence después de 30 días por defecto y la respuesta
+pública devuelve solo el primer nombre y el documento enmascarado. La operación
+de abordaje debe implementarse por separado si se requiere consumo único.
 
 ## 2. Autenticación
 

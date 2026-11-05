@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 from datetime import timedelta
 from dotenv import load_dotenv
+from django.core.exceptions import ImproperlyConfigured
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env")
@@ -18,9 +19,15 @@ def env_list(name, default=""):
     value = os.getenv(name, default)
     return [item.strip() for item in value.split(",") if item.strip()]
 
-SECRET_KEY = os.getenv("SECRET_KEY", "cambia_esta_clave")
-
 DEBUG = os.getenv("DEBUG", "False").lower() in {"1", "true", "yes", "on"}
+
+SECRET_KEY = os.getenv("SECRET_KEY", "")
+if not DEBUG and (
+    not SECRET_KEY or SECRET_KEY == "cambia_esta_clave"
+):
+    raise ImproperlyConfigured(
+        "SECRET_KEY debe configurarse con un valor privado en producción."
+    )
 
 ALLOWED_HOSTS = env_list("ALLOWED_HOSTS", "localhost,127.0.0.1")
 
@@ -52,6 +59,7 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
+    'DjangoProject1.security_middleware.SecurityHeadersMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -141,10 +149,21 @@ REST_FRAMEWORK = {
         "DjangoProject1.apps.accounts.tokens.PasswordVersionJWTAuthentication",
     ],
     "DEFAULT_PERMISSION_CLASSES": [
-        "rest_framework.permissions.IsAuthenticated",
+        "DjangoProject1.permissions.PasswordChangeRequiredPermission",
     ],
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": 10,
+}
+
+CACHES = {
+    "default": {
+        "BACKEND": (
+            "django.core.cache.backends.locmem.LocMemCache"
+            if DEBUG
+            else "django.core.cache.backends.db.DatabaseCache"
+        ),
+        "LOCATION": os.getenv("CACHE_LOCATION", "django_cache"),
+    }
 }
 
 SIMPLE_JWT = {
@@ -155,9 +174,22 @@ SIMPLE_JWT = {
     "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
 
     # Mantener el comportamiento de renovación sencillo
-    "ROTATE_REFRESH_TOKENS": False,
-    "BLACKLIST_AFTER_ROTATION": False,
+    "BLACKLIST_AFTER_ROTATION": True,
+    "ROTATE_REFRESH_TOKENS": True,
 }
+
+SECURE_CONTENT_TYPE_NOSNIFF = True
+SECURE_REFERRER_POLICY = "strict-origin-when-cross-origin"
+SECURE_HSTS_SECONDS = int(os.getenv("SECURE_HSTS_SECONDS", "31536000"))
+SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+SECURE_HSTS_PRELOAD = True
+TICKET_VERIFICATION_MAX_AGE_SECONDS = int(
+    os.getenv("TICKET_VERIFICATION_MAX_AGE_SECONDS", str(30 * 24 * 60 * 60))
+)
+LOGIN_FAILURE_LIMIT = int(os.getenv("LOGIN_FAILURE_LIMIT", "5"))
+LOGIN_FAILURE_WINDOW_SECONDS = int(
+    os.getenv("LOGIN_FAILURE_WINDOW_SECONDS", "900")
+)
 
 EMAIL_BACKEND = os.getenv(
     "EMAIL_BACKEND",

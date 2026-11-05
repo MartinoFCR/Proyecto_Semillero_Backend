@@ -82,7 +82,12 @@ class TicketVerificationView(APIView):
                 {"valid": False, "detail": "El tiquete no es válido."},
                 status=status.HTTP_404_NOT_FOUND,
             )
-        return Response({
+        identification = ticket.passenger_identification
+        masked_identification = (
+            f"{'*' * max(len(identification) - 4, 0)}"
+            f"{identification[-4:]}"
+        )
+        response = Response({
             "valid": ticket.status == Ticket.Status.ISSUED,
             "status": ticket.status,
             "ticket_code": str(ticket.ticket_code),
@@ -94,14 +99,17 @@ class TicketVerificationView(APIView):
                 "date_time_end": ticket.trip.date_time_end,
             },
             "passenger": {
-                "name": ticket.passenger_name,
-                "identification_number": ticket.passenger_identification,
+                "name": ticket.passenger_name.split(" ")[0],
+                "identification_number": masked_identification,
             },
             "seat": {
                 "id": ticket.seat_id,
                 "seat_number": ticket.seat.seat_number,
             },
         })
+        response["Cache-Control"] = "no-store"
+        response["Pragma"] = "no-cache"
+        return response
 
 
 class AdminSaleView(APIView):
