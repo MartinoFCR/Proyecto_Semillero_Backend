@@ -18,6 +18,7 @@ mediante PostGIS.
 - Recuperación de contraseña y cambio obligatorio de la contraseña inicial.
 - Solicitudes de soporte y contactos públicos configurables.
 - Confirmaciones de compra por correo.
+- Carné digital vigente mientras la cuenta del cliente permanezca activa.
 - Integración preparada para Wompi Sandbox.
 
 ## Estructura principal
@@ -114,7 +115,17 @@ tener un volumen equivalente a:
 
 ```yaml
 volumes:
-  - ./media:/app/media
+  - ./backend/media:/app/media
+```
+
+En este despliegue Compose se ejecuta desde `/home/devadhan/semillero`, por
+lo que el archivo `docker-compose.yml` está usando:
+
+```yaml
+services:
+  backend:
+    volumes:
+      - ./backend/media:/app/media
 ```
 
 La `SECRET_KEY` no debe conservar el valor de ejemplo
@@ -520,6 +531,51 @@ Comprobar que las variables llegan sin mostrar sus valores:
 ```bash
 docker exec semillero-backend python3 -c "import os; print('PUBLIC:', bool(os.getenv('WOMPI_PUBLIC_KEY'))); print('PRIVATE:', bool(os.getenv('WOMPI_PRIVATE_KEY'))); print('INTEGRITY:', bool(os.getenv('WOMPI_INTEGRITY_SECRET'))); print('EVENTS:', bool(os.getenv('WOMPI_EVENTS_SECRET')))"
 ```
+
+### Publicación de fotos con Nginx
+
+Si Nginx se ejecuta en el VPS fuera del contenedor, debe publicar la carpeta
+del host que está montada en Docker. En este proyecto Compose se ejecuta desde
+`/home/devadhan/semillero`, por lo que la carpeta real es
+`/home/devadhan/semillero/backend/media`.
+
+La configuración activa está en
+`/etc/nginx/sites-enabled/semillero-bic-backend`. Dentro del bloque `server`
+que contiene `listen 443 ssl` y `server_name portalbic.site
+www.portalbic.site`, debe existir:
+
+```nginx
+location /media/ {
+    alias /home/devadhan/semillero/backend/media/;
+
+    types {
+        image/webp webp;
+        image/jpeg jpg jpeg;
+        image/png png;
+    }
+
+    try_files $uri =404;
+}
+```
+
+El `alias` debe terminar en `/` y debe apuntar a la carpeta del host, no a
+`/app/media`, porque Nginx se ejecuta fuera del contenedor. No debe existir otro
+bloque activo con `server_name portalbic.site`, porque Nginx puede ignorar la
+configuración correcta por conflicto. Asegura permisos de lectura y recarga
+Nginx:
+
+```bash
+sudo rm -f /etc/nginx/sites-enabled/portalbic
+sudo chmod -R o+rX /home/devadhan/semillero/backend/media
+sudo nginx -t
+sudo systemctl reload nginx
+curl -I https://portalbic.site/media/profile_photos/profile.webp
+```
+
+La respuesta esperada es `HTTP/1.1 200 OK` con
+`Content-Type: image/webp`. Si Nginx está dentro de otro contenedor, esta
+configuración cambia: ese contenedor también debe montar el mismo volumen y
+usar `/app/media/` como `alias`.
 
 ## Consideraciones de seguridad para producción
 

@@ -269,6 +269,9 @@ GET /api/accounts/cards/verify/?token=QR_TOKEN
 El primer endpoint requiere autenticación. El QR contiene una referencia
 firmada y opaca, nunca el JWT ni los datos personales completos. El carné
 identifica al cliente, pero no sustituye un tiquete ni acredita una compra.
+La vigencia es indefinida mientras la cuenta esté activa: la respuesta
+devuelve `valid_until: null` y `validity: "indefinite_while_active"`. Si la
+cuenta se desactiva, el estado del carné pasa a `revoked`.
 
 ## 2. Autenticación
 

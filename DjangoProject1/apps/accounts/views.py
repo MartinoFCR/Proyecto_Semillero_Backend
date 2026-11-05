@@ -434,6 +434,7 @@ class DigitalCardView(APIView):
             ).data["photo_url"],
             "status": "active" if request.user.is_active else "revoked",
             "valid_until": None,
+            "validity": "indefinite_while_active",
             "qr": {
                 "token": token,
                 "verification_url": verification_url,
@@ -463,4 +464,5 @@ class CardVerifyView(APIView):
             "name": f"{user.first_name} {user.last_name}".strip(),
             "status": "active" if user.is_active else "revoked",
             "valid_until": None,
+            "validity": "indefinite_while_active",
         })
