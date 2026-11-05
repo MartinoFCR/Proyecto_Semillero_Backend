@@ -15,6 +15,9 @@ mediante PostGIS.
 - Lecturas, eventos y estados de sillas asociados a viajes.
 - Ventas administrativas y ventas online.
 - Tiquetes con silla asignada y código único.
+- Recuperación de contraseña y cambio obligatorio de la contraseña inicial.
+- Solicitudes de soporte y contactos públicos configurables.
+- Confirmaciones de compra por correo.
 - Integración preparada para Wompi Sandbox.
 
 ## Estructura principal
@@ -30,7 +33,8 @@ DjangoProject1/
     ├── geography/   Departamentos, ciudades y lugares
     ├── routes/      Rutas
     ├── trips/       Viajes, lecturas y eventos
-    └── sales/       Ventas, pagos y tiquetes
+    ├── sales/       Ventas, pagos y tiquetes
+    └── support/     Solicitudes de soporte
 ```
 
 ## Requisitos
@@ -80,6 +84,37 @@ WOMPI_PUBLIC_KEY=pub_test_...
 WOMPI_PRIVATE_KEY=prv_test_...
 WOMPI_INTEGRITY_SECRET=test_integrity_...
 WOMPI_EVENTS_SECRET=test_events_...
+
+# Cuenta, correo y soporte
+FRONTEND_BASE_URL=https://portalbic.site
+EMAIL_BACKEND=django.core.mail.backends.smtp.EmailBackend
+EMAIL_HOST=smtp.example.com
+EMAIL_PORT=587
+EMAIL_HOST_USER=...
+EMAIL_HOST_PASSWORD=...
+EMAIL_USE_TLS=true
+DEFAULT_FROM_EMAIL=no-reply@portalbic.site
+MEDIA_ROOT=/app/media
+CUSTOMER_SERVICE_EMAIL=soporte@example.com
+CUSTOMER_SERVICE_PHONE=...
+CUSTOMER_SERVICE_WHATSAPP=...
+CUSTOMER_SERVICE_HOURS=Lunes a viernes de 8:00 a 17:00
+CHANGES_POLICY_URL=https://portalbic.site/politicas/cambios
+REFUNDS_POLICY_URL=https://portalbic.site/politicas/reembolsos
+PRIVACY_POLICY_URL=https://portalbic.site/politicas/privacidad
+TERMS_URL=https://portalbic.site/terminos
+```
+
+Las fotos se guardan dentro de `MEDIA_ROOT/profile_photos/` y `/media/` se
+publica también cuando `DEBUG=False`. En Docker, `/app/media` debe montarse en
+un volumen persistente o en una carpeta del host; de lo contrario, una
+reconstrucción del contenedor elimina los archivos subidos aunque la base de
+datos conserve el nombre de la foto. Por ejemplo, el servicio backend debe
+tener un volumen equivalente a:
+
+```yaml
+volumes:
+  - ./media:/app/media
 ```
 
 La `SECRET_KEY` no debe conservar el valor de ejemplo
@@ -112,14 +147,27 @@ docker exec semillero-backend python3 manage.py showmigrations accounts sales fl
 docker compose restart backend
 ```
 
+Las migraciones nuevas de esta versión incluyen:
+
+```text
+accounts 0004_user_password_changed_at_accountactiontoken
+accounts 0005_user_password_change_required
+sales    0009_sale_email_confirmation_sent_at
+support  0001_initial
+```
+
 Para esta versión deben aparecer aplicadas, como mínimo, estas migraciones:
 
 ```text
 accounts 0003_user_photo_card_id
+accounts 0004_user_password_changed_at_accountactiontoken
+accounts 0005_user_password_change_required
 sales    0005_saleitem_sale_idempotency_key
 sales    0006_passenger_document_codes
 sales    0007_alter_sale_status
+sales    0009_sale_email_confirmation_sent_at
 fleet    0004_bustype_bus_bus_type
+support  0001_initial
 ```
 
 Si `/api/token/` devuelve `500` después de desplegar esta versión, revisar
@@ -248,12 +296,14 @@ La aplicación de ventas está en
 
 Modelos principales:
 
-- `Sale`: venta y estado comercial.
+- `Sale`: venta conjunta, estado comercial, comprador y total.
+- `SaleItem`: pasajero y silla incluidos en una venta.
 - `Payment`: información del pago y referencia del proveedor.
-- `Ticket`: tiquete emitido, pasajero, viaje, silla y código único.
+- `Ticket`: tiquete emitido por silla, pasajero, viaje, estado y código único.
 
-Cada tiquete reserva una silla para un viaje. No se puede emitir otro tiquete
-activo para la misma combinación de viaje y silla.
+Una compra puede incluir hasta 10 pasajeros y sillas. Todas las sillas se
+reservan de forma atómica y no se puede emitir otro tiquete activo para la
+misma combinación de viaje y silla.
 
 ### Consulta de ventas y tiquetes
 
@@ -264,6 +314,24 @@ GET /api/sales/tickets/
 
 Un cliente solo puede consultar sus propias ventas y tiquetes. Un
 administrador puede consultar todas las ventas y tiquetes.
+
+Cada tiquete incluye un token y una URL de verificación firmados por el
+servidor:
+
+```text
+GET /api/sales/tickets/verify/?token=VERIFICATION_TOKEN
+```
+
+La verificación es pública y devuelve `valid` junto con el estado `issued`,
+`used` o `cancelled`. El token de verificación es independiente del JWT.
+El frontend puede usar esa URL como contenido del QR al generar un PDF con
+una boleta por página.
+
+El endpoint de factura propia es:
+
+```text
+GET /api/sales/sales/{sale_id}/invoice/
+```
 
 ### Venta administrativa
 
@@ -299,7 +367,7 @@ administrada para ese viaje (`/api/trips/fares/`).
 Las ventas administrativas se marcan como pagadas y generan el tiquete
 inmediatamente. Si el cliente no existe, se crea como cliente y su contraseña
 provisional es su número de identificación. Esta contraseña debe reemplazarse
-posteriormente por un flujo seguro de activación o recuperación.
+posteriormente por un flujo seguro de cambio de contraseña.
 
 ## Wompi Sandbox
 
@@ -314,7 +382,16 @@ Ejemplo:
 ```json
 {
   "trip": 1,
-  "seat": 5
+  "passengers": [
+    {
+      "seat": 5,
+      "name": "Ana Perez",
+      "identification_document_code": "13",
+      "identification_number": "100000001",
+      "email": "ana@example.com",
+      "telephone": "3001234567"
+    }
+  ]
 }
 ```
 
@@ -334,10 +411,12 @@ El frontend debe usar `public_key` y `signature_integrity` con el Widget de
 Wompi. Los datos de tarjeta no deben pasar por el backend ni guardarse en la
 base de datos.
 
-Las compras online reservan la silla durante 5 minutos. Si el pago no se
-confirma dentro de ese plazo, la venta queda `expired` y la silla vuelve a
-estar disponible. Una venta administrativa recibe `409 Conflict` mientras
-exista una reserva online vigente.
+Las compras online aceptan hasta 10 pasajeros, reservan todas las sillas de
+forma atómica durante 5 minutos y requieren el encabezado
+`Idempotency-Key`. Si el pago no se confirma dentro de ese plazo, la venta
+queda `expired` y las sillas vuelven a estar disponibles. Una venta
+administrativa recibe `409 Conflict` mientras exista una reserva online
+vigente.
 
 ## Facturación electrónica con Factus
 
@@ -395,7 +474,7 @@ El backend consulta la transacción directamente con Wompi usando
 Solo una transacción `APPROVED` marca la venta como pagada y genera el
 tiquete. Los estados `DECLINED` y `ERROR` marcan la venta como fallida.
 
-### Webhook futuro
+### Webhook de Wompi
 
 Cuando se recupere el acceso al panel de Wompi, se podrá configurar:
 
@@ -414,27 +493,6 @@ Para pruebas Sandbox se pueden usar las tarjetas documentadas por Wompi:
 ```
 
 Usar una fecha futura y un CVC de tres dígitos.
-
-## Facturación electrónica
-
-La facturación electrónica con Factus todavía no está implementada. Es
-independiente del pago y del tiquete:
-
-```text
-Pago aprobado -> tiquete -> factura electrónica
-```
-
-La integración futura deberá usar Factus API Sandbox, OAuth2 y el endpoint de
-validación de facturas. Factus genera o devuelve el CUFE después de validar la
-factura; el backend no debe inventarlo ni calcularlo con un UUID.
-
-Antes de implementarla se deben confirmar:
-
-- Credenciales de Factus API, diferentes de las de Factus Pay.
-- Datos fiscales del emisor.
-- Rango y prefijo de numeración.
-- Tipo de identificación y municipio del cliente.
-- Tratamiento tributario e impuestos del tiquete.
 
 ## Docker y despliegue
 
@@ -463,7 +521,7 @@ Comprobar que las variables llegan sin mostrar sus valores:
 docker exec semillero-backend python3 -c "import os; print('PUBLIC:', bool(os.getenv('WOMPI_PUBLIC_KEY'))); print('PRIVATE:', bool(os.getenv('WOMPI_PRIVATE_KEY'))); print('INTEGRITY:', bool(os.getenv('WOMPI_INTEGRITY_SECRET'))); print('EVENTS:', bool(os.getenv('WOMPI_EVENTS_SECRET')))"
 ```
 
-## Seguridad pendiente
+## Consideraciones de seguridad para producción
 
 La configuración de producción debe mantener:
 
@@ -475,9 +533,8 @@ La configuración de producción debe mantener:
   valor recibido del cliente.
 - Creación, edición y eliminación de viajes restringidas a administradores.
 
-El análisis de seguridad identificó estos puntos como pendientes de corrección
-antes de usar pagos y ventas en producción. La confirmación temporal de Wompi
-no reemplaza la validación del webhook para un despliegue definitivo.
+Estas variables y controles deben mantenerse durante el despliegue. La
+confirmación temporal de Wompi no reemplaza la validación del webhook.
 
 ## Estado del proyecto
 
@@ -488,6 +545,12 @@ Implementado:
 - Ventas administrativas.
 - Checkout Wompi Sandbox.
 - Consulta temporal del estado de transacción.
+- Compra múltiple con reserva atómica e idempotencia.
+- Tiquetes con verificación pública firmada para QR.
+- Consulta de factura Factus por compra.
+- Recuperación y cambio seguro de contraseña.
+- Cambio obligatorio de la contraseña inicial de cuentas creadas por administración.
+- Solicitudes de soporte y confirmación de compra por correo.
 - Configuración de variables Wompi en Docker.
 - Documentación OpenAPI, Swagger y ReDoc.
 
@@ -495,7 +558,6 @@ Pendiente:
 
 - Integración del Widget en el frontend.
 - Configuración y prueba del webhook de Wompi.
-- Cálculo de precios en el backend.
 - Correcciones de autorización detectadas en la revisión de seguridad.
-- Facturación electrónica con Factus.
-- Generación visual de PDF o QR del tiquete.
+- Generación visual del PDF en el frontend; el backend entrega los datos y la
+  URL firmada para el QR.

@@ -38,6 +38,7 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'corsheaders',
+    'rest_framework_simplejwt.token_blacklist',
     
     'DjangoProject1.apps.accounts',
     'DjangoProject1.apps.fleet',
@@ -45,6 +46,7 @@ INSTALLED_APPS = [
     'DjangoProject1.apps.trips',
     'DjangoProject1.apps.geography',
     'DjangoProject1.apps.sales',
+    'DjangoProject1.apps.support',
 ]
 
 MIDDLEWARE = [
@@ -136,7 +138,7 @@ REST_FRAMEWORK = {
     # or allow read-only access for unauthenticated users.
     'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
     "DEFAULT_AUTHENTICATION_CLASSES": [
-        "rest_framework_simplejwt.authentication.JWTAuthentication",
+        "DjangoProject1.apps.accounts.tokens.PasswordVersionJWTAuthentication",
     ],
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticated",
@@ -157,9 +159,31 @@ SIMPLE_JWT = {
     "BLACKLIST_AFTER_ROTATION": False,
 }
 
+EMAIL_BACKEND = os.getenv(
+    "EMAIL_BACKEND",
+    "django.core.mail.backends.smtp.EmailBackend",
+)
+EMAIL_HOST = os.getenv("EMAIL_HOST", "")
+EMAIL_PORT = int(os.getenv("EMAIL_PORT", "587"))
+EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER", "")
+EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "")
+EMAIL_USE_TLS = os.getenv("EMAIL_USE_TLS", "true").lower() in {"1", "true", "yes"}
+DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "no-reply@portalbic.site")
+FRONTEND_BASE_URL = os.getenv("FRONTEND_BASE_URL", "https://portalbic.site").rstrip("/")
+PASSWORD_RESET_TOKEN_MINUTES = int(os.getenv("PASSWORD_RESET_TOKEN_MINUTES", "30"))
+ACCOUNT_ACTION_RATE_LIMIT = int(os.getenv("ACCOUNT_ACTION_RATE_LIMIT", "5"))
+CUSTOMER_SERVICE_EMAIL = os.getenv("CUSTOMER_SERVICE_EMAIL") or None
+CUSTOMER_SERVICE_PHONE = os.getenv("CUSTOMER_SERVICE_PHONE") or None
+CUSTOMER_SERVICE_WHATSAPP = os.getenv("CUSTOMER_SERVICE_WHATSAPP") or None
+CUSTOMER_SERVICE_HOURS = os.getenv("CUSTOMER_SERVICE_HOURS") or None
+CHANGES_POLICY_URL = os.getenv("CHANGES_POLICY_URL") or None
+REFUNDS_POLICY_URL = os.getenv("REFUNDS_POLICY_URL") or None
+PRIVACY_POLICY_URL = os.getenv("PRIVACY_POLICY_URL") or None
+TERMS_URL = os.getenv("TERMS_URL") or None
+
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/6.0/howto/static-files/
 
 STATIC_URL = 'static/'
 MEDIA_URL = '/media/'
-MEDIA_ROOT = BASE_DIR / 'media'
+MEDIA_ROOT = Path(os.getenv("MEDIA_ROOT", str(BASE_DIR / "media")))

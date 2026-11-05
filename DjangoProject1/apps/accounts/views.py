@@ -1,8 +1,16 @@
+import hashlib
+import secrets
+from datetime import timedelta
+
+from django.conf import settings
 from django.core import signing
-from django.urls import reverse
-from PIL import Image, UnidentifiedImageError
-from django.core import signing
-from django.core.files.images import get_image_dimensions
+from django.core.cache import cache
+from django.core.mail import send_mail
+from smtplib import SMTPException
+from django.contrib.auth import password_validation
+from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db import transaction
+from django.utils import timezone
 from django.urls import reverse
 from PIL import Image, UnidentifiedImageError
 from rest_framework.response import Response
@@ -11,7 +19,7 @@ from rest_framework.views import APIView
 from rest_framework.viewsets import ModelViewSet
 from rest_framework.permissions import AllowAny, IsAuthenticated
 
-from DjangoProject1.apps.accounts.models import User
+from DjangoProject1.apps.accounts.models import AccountActionToken, User
 from DjangoProject1.apps.accounts.serializers import (
     CustomerSerializer,
     ProfileSerializer,
@@ -120,6 +128,203 @@ class PublicRegistrationView(APIView):
             ProfileSerializer(serializer.save()).data,
             status=status.HTTP_201_CREATED,
         )
+
+
+GENERIC_RESET_DETAIL = "Si existe una cuenta asociada, recibirás las instrucciones."
+GENERIC_ACTIVATION_DETAIL = "Si corresponde habilitar esta cuenta, recibirás las instrucciones."
+
+
+def _action_token(user, purpose, request):
+    raw_token = secrets.token_urlsafe(32)
+    AccountActionToken.objects.filter(
+        user=user,
+        purpose=purpose,
+        used_at__isnull=True,
+    ).update(used_at=timezone.now())
+    AccountActionToken.objects.create(
+        user=user,
+        purpose=purpose,
+        token_hash=hashlib.sha256(raw_token.encode()).hexdigest(),
+        expires_at=timezone.now() + timedelta(
+            minutes=settings.PASSWORD_RESET_TOKEN_MINUTES,
+        ),
+        request_ip=request.META.get("REMOTE_ADDR"),
+    )
+    return raw_token
+
+
+def _send_action_email(user, purpose, raw_token):
+    if purpose == AccountActionToken.Purpose.PASSWORD_RESET:
+        path = "/clientes/restablecer-contrasena#token="
+        subject = "Restablece tu contraseña"
+    else:
+        path = "/clientes/activar-cuenta#token="
+        subject = "Activa tu cuenta"
+    send_mail(
+        subject,
+        f"Abre este enlace para continuar: {settings.FRONTEND_BASE_URL}{path}{raw_token}",
+        settings.DEFAULT_FROM_EMAIL,
+        [user.email],
+        fail_silently=False,
+    )
+
+
+def _rate_limited(request, scope, identifier=""):
+    ip = request.META.get("REMOTE_ADDR", "unknown")
+    keys = [f"account-action:{scope}:ip:{ip}"]
+    if identifier:
+        keys.append(f"account-action:{scope}:account:{identifier}")
+    accepted = [cache.add(key, True, timeout=60) for key in keys]
+    return not all(accepted)
+
+
+class PasswordResetRequestView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        email = str(request.data.get("email", "")).strip().lower()
+        if _rate_limited(request, "reset", email):
+            return Response(
+                {"code": "rate_limited", "detail": "Intenta nuevamente más tarde."},
+                status=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+        user = User.objects.filter(email__iexact=email).first()
+        if user and user.is_active:
+            raw_token = _action_token(
+                user,
+                AccountActionToken.Purpose.PASSWORD_RESET,
+                request,
+            )
+            try:
+                _send_action_email(user, AccountActionToken.Purpose.PASSWORD_RESET, raw_token)
+            except (SMTPException, OSError):
+                return Response(
+                    {"detail": GENERIC_RESET_DETAIL},
+                    status=status.HTTP_202_ACCEPTED,
+                )
+        return Response({"detail": GENERIC_RESET_DETAIL}, status=status.HTTP_202_ACCEPTED)
+
+
+class AccountActivationRequestView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        email = str(request.data.get("email", "")).strip().lower()
+        if _rate_limited(request, "activation", email):
+            return Response(
+                {"code": "rate_limited", "detail": "Intenta nuevamente más tarde."},
+                status=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+        user = User.objects.filter(
+            email__iexact=email,
+            role=User.Role.CLIENT,
+            is_active=False,
+        ).first()
+        if user:
+            raw_token = _action_token(
+                user,
+                AccountActionToken.Purpose.ACTIVATION,
+                request,
+            )
+            try:
+                _send_action_email(user, AccountActionToken.Purpose.ACTIVATION, raw_token)
+            except (SMTPException, OSError):
+                return Response(
+                    {"detail": GENERIC_ACTIVATION_DETAIL},
+                    status=status.HTTP_202_ACCEPTED,
+                )
+        return Response({"detail": GENERIC_ACTIVATION_DETAIL}, status=status.HTTP_202_ACCEPTED)
+
+
+class AccountActionConfirmView(APIView):
+    permission_classes = [AllowAny]
+    purpose = None
+
+    def post(self, request):
+        purpose = self.purpose
+        raw_token = str(request.data.get("token", ""))
+        new_password = request.data.get("new_password")
+        if not raw_token or not isinstance(new_password, str):
+            return Response(
+                {"code": "invalid_or_expired_token", "detail": "El enlace no es válido o ha vencido."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+        with transaction.atomic():
+            action = AccountActionToken.objects.select_for_update().filter(
+                token_hash=token_hash,
+                purpose=purpose,
+                used_at__isnull=True,
+                expires_at__gt=timezone.now(),
+            ).select_related("user").first()
+            if not action:
+                return Response(
+                    {"code": "invalid_or_expired_token", "detail": "El enlace no es válido o ha vencido."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            user = action.user
+            try:
+                password_validation.validate_password(new_password, user)
+            except DjangoValidationError as exc:
+                return Response(
+                    {"new_password": list(exc.messages)},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            user.set_password(new_password)
+            user.password_changed_at = timezone.now()
+            user.password_change_required = False
+            if purpose == AccountActionToken.Purpose.ACTIVATION:
+                user.is_active = True
+            user.save(update_fields=[
+                "password",
+                "password_changed_at",
+                "password_change_required",
+                "is_active",
+            ])
+            action.used_at = timezone.now()
+            action.save(update_fields=["used_at"])
+            AccountActionToken.objects.filter(
+                user=user,
+                used_at__isnull=True,
+            ).exclude(pk=action.pk).update(used_at=timezone.now())
+        detail = (
+            "Tu acceso está habilitado. Ya puedes iniciar sesión."
+            if purpose == AccountActionToken.Purpose.ACTIVATION
+            else "Contraseña actualizada. Inicia sesión nuevamente."
+        )
+        return Response({"detail": detail})
+
+
+class PasswordChangeView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        user = request.user
+        if not user.check_password(request.data.get("current_password", "")):
+            return Response(
+                {"current_password": ["La contraseña actual es incorrecta."]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        new_password = request.data.get("new_password")
+        try:
+            password_validation.validate_password(new_password, user)
+        except DjangoValidationError as exc:
+            return Response(
+                {"new_password": list(exc.messages)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        user.set_password(new_password)
+        user.password_changed_at = timezone.now()
+        user.password_change_required = False
+        user.save(update_fields=[
+            "password",
+            "password_changed_at",
+            "password_change_required",
+        ])
+        return Response({
+            "detail": "Contraseña actualizada. Inicia sesión nuevamente.",
+            "reauthentication_required": True,
+        })
 
 
 class ProfileView(APIView):

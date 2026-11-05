@@ -67,6 +67,7 @@ class Sale(models.Model):
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    email_confirmation_sent_at = models.DateTimeField(null=True, blank=True)
 
     def has_active_hold(self):
         return (

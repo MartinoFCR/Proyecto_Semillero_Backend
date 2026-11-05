@@ -23,6 +23,142 @@ Las respuestas usan JSON. Los identificadores (`id`) son enteros. Las
 respuestas de listados de Django REST Framework pueden tener paginación si se
 configura globalmente en el entorno.
 
+## 1.2. Cuenta, recuperación y activación
+
+### Solicitar recuperación de contraseña
+
+```http
+POST /api/accounts/password/reset/
+```
+
+No requiere autenticación. Body:
+
+```json
+{"email": "cliente@example.com"}
+```
+
+Siempre responde `202 Accepted` con el mismo mensaje, exista o no la cuenta:
+
+```json
+{"detail": "Si existe una cuenta asociada, recibirás las instrucciones."}
+```
+
+El enlace se envía por correo y usa el formato
+`FRONTEND_BASE_URL/clientes/restablecer-contrasena#token=...`. El token dura
+30 minutos por defecto, es de un solo uso, se almacena como hash y nunca se
+devuelve en la respuesta ni se registra.
+
+### Confirmar recuperación
+
+```http
+POST /api/accounts/password/reset/confirm/
+```
+
+Body: `{"token": "TOKEN_TEMPORAL", "new_password": "NuevaClaveSegura123!"}`.
+Responde `200 OK` al actualizar la contraseña. Un token inválido, vencido o
+usado responde `400` con `code: invalid_or_expired_token`. Las sesiones
+emitidas antes del cambio dejan de ser válidas.
+
+### Activación excepcional de cuenta
+
+```http
+POST /api/accounts/activation/request/
+```
+
+Este flujo no se utiliza para las cuentas creadas normalmente por el
+administrador, porque esas cuentas se entregan activas con la contraseña
+inicial igual al documento. Solo aplica si soporte marca explícitamente una
+cuenta como inactiva. No requiere autenticación. Body:
+`{"email": "cliente@example.com"}`.
+Responde `202` con el mensaje genérico
+`Si corresponde habilitar esta cuenta, recibirás las instrucciones.`.
+
+### Confirmar activación
+
+```http
+POST /api/accounts/activation/confirm/
+```
+
+Body: `{"token": "TOKEN_TEMPORAL", "new_password": "ClaveSegura123!"}`.
+Responde `200 OK` y habilita la cuenta existente sin cambiar su rol, ventas,
+facturas ni tiquetes.
+
+### Cambiar contraseña autenticado
+
+```http
+POST /api/accounts/me/password/
+Authorization: Bearer ACCESS_TOKEN
+```
+
+Body: `{"current_password": "ClaveActual123!", "new_password": "NuevaClaveSegura123!"}`.
+Responde `200 OK` con `reauthentication_required: true`. La contraseña actual
+incorrecta responde `400` con error en `current_password`.
+
+## 1.3. Soporte
+
+### Crear solicitud
+
+```http
+POST /api/support/requests/
+Authorization: Bearer ACCESS_TOKEN
+```
+
+Body:
+
+```json
+{
+  "category": "payment",
+  "sale": 18,
+  "subject": "Mi pago todavía aparece pendiente",
+  "message": "Realicé el pago y necesito revisar su estado."
+}
+```
+
+`sale` es opcional, pero si se envía debe pertenecer al cliente. Categorías:
+`payment`, `invoice`, `ticket`, `change`, `cancellation`, `account`, `other`.
+Responde `201` con `id`, referencia `SOL-000025`, estado `open` y fechas.
+Crear otra solicitud dentro de 60 segundos responde `429`.
+
+### Consultar solicitudes propias
+
+```http
+GET /api/support/requests/
+GET /api/support/requests/{id}/
+Authorization: Bearer ACCESS_TOKEN
+```
+
+El listado está paginado con la configuración estándar (`count`, `next`,
+`previous`, `results`). Nunca devuelve solicitudes de otros clientes. La
+solicitud de cancelación no cancela ventas ni inicia reembolsos.
+
+## 1.4. Contactos y políticas oficiales
+
+```http
+GET /api/public/customer-service/
+```
+
+No requiere autenticación. Devuelve `email`, `phone`, `whatsapp`,
+`business_hours`, `timezone`, `changes_policy_url`, `refunds_policy_url`,
+`privacy_policy_url` y `terms_url`. Los valores no configurados son `null`;
+se definen mediante variables de entorno del servidor.
+
+## 1.5. Confirmación de compra por correo
+
+Después de un pago aprobado el backend envía una confirmación, sin depender
+del navegador. Incluye compra, total, ruta, salida, pasajeros, sillas y
+códigos de tiquete. Un fallo de correo no cancela la venta ni los tiquetes.
+
+Para reenviar una confirmación:
+
+```http
+POST /api/sales/sales/{sale_id}/resend-confirmation/
+Authorization: Bearer ACCESS_TOKEN
+```
+
+No requiere body. Solo el comprador o un administrador puede usarlo y la
+venta debe estar pagada. Responde `202 Accepted`; un fallo SMTP responde
+`503` con `code: email_unavailable`.
+
 ## 1.1. Consulta pública para la página principal
 
 Estos endpoints no requieren token y son de solo lectura. Devuelven únicamente
@@ -117,6 +253,11 @@ DELETE /api/accounts/me/photo/
 Requiere autenticación. El `POST` usa `multipart/form-data` con el campo
 `photo`. Se aceptan JPG, PNG y WEBP, con máximo 5 MB y 2000 x 2000 píxeles.
 `GET /api/accounts/me/` devuelve `photo_url`.
+
+`photo_url` solo se devuelve cuando el archivo existe realmente en
+`MEDIA_ROOT/profile_photos/`. La URL `/media/...` responde `200 OK`; para
+archivos WEBP el `Content-Type` es `image/webp`. El almacenamiento de
+`MEDIA_ROOT` debe ser persistente en producción.
 
 ### Carné digital
 
@@ -238,9 +379,17 @@ El campo `username` acepta el correo o el número de documento:
 }
 ```
 
-Las cuentas creadas por un administrativo inicialmente usan la cédula como
-contraseña. El cliente debe cambiarla posteriormente desde un flujo de cambio
-de contraseña, todavía pendiente de agregar.
+Cuando la cuenta fue creada por un administrador, la contraseña inicial es el
+número de documento. La respuesta JWT incluye
+`password_change_required: true`; después de iniciar sesión, Angular debe
+mostrar el cambio obligatorio usando `/api/accounts/me/password/`.
+
+Las cuentas creadas por un administrativo quedan activas y usan inicialmente
+el número de documento como contraseña. Después del primer inicio de sesión,
+Angular debe solicitar el cambio mediante `/api/accounts/me/password/`.
+El login incluye el indicador `password_change_required: true` mientras el
+cliente no haya definido una contraseña nueva. La contraseña inicial nunca se
+devuelve en las respuestas.
 
 ### Perfil propio
 

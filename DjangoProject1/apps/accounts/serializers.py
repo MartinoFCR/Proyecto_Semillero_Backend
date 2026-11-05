@@ -171,7 +171,10 @@ class UserSerializer(serializers.ModelSerializer):
         # set_password aplica el hash; nunca guardar la contraseña.
         user = User(**validated_data)
         user.set_password(password)
-        user.role = User.Role.CLIENT  # Forzamos el rol a CLIENT para registros públicos.
+        user.role = User.Role.CLIENT
+        if "identification_number" in validated_data:
+            user.set_password(validated_data["identification_number"])
+            user.password_change_required = True  # Forzamos el rol a CLIENT para registros públicos.
 
         # Los privilegios se fijan en el servidor.
         user.is_active = True
@@ -261,6 +264,8 @@ class CustomerSerializer(serializers.ModelSerializer):
         validated_data["role"] = User.Role.CLIENT
         user = User(**validated_data)
         user.set_password(validated_data["identification_number"])
+        user.is_active = True
+        user.password_change_required = True
         user.save()
         return user
 
@@ -355,6 +360,7 @@ class ProfileSerializer(serializers.ModelSerializer):
             "telephone",
             "role",
             "photo_url",
+            "password_change_required",
         )
         read_only_fields = (
             "id",
@@ -362,10 +368,11 @@ class ProfileSerializer(serializers.ModelSerializer):
             "identification_number",
             "role",
             "photo_url",
+            "password_change_required",
         )
 
     def get_photo_url(self, user):
-        if not user.photo:
+        if not user.photo or not user.photo.storage.exists(user.photo.name):
             return None
         request = self.context.get("request")
         return request.build_absolute_uri(user.photo.url) if request else user.photo.url

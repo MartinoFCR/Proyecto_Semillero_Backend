@@ -1,6 +1,9 @@
 from django.utils import timezone
 from rest_framework.generics import ListAPIView
 from rest_framework.permissions import AllowAny
+from django.conf import settings
+from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from DjangoProject1.apps.routes.models import Route
 from DjangoProject1.apps.trips.models import Trip
@@ -46,3 +49,20 @@ class PublicTripListView(ListAPIView):
             )
             .order_by("date_time_start", "id")
         )
+
+
+class CustomerServiceView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        return Response({
+            "email": getattr(settings, "CUSTOMER_SERVICE_EMAIL", None),
+            "phone": getattr(settings, "CUSTOMER_SERVICE_PHONE", None),
+            "whatsapp": getattr(settings, "CUSTOMER_SERVICE_WHATSAPP", None),
+            "business_hours": getattr(settings, "CUSTOMER_SERVICE_HOURS", None),
+            "timezone": settings.TIME_ZONE,
+            "changes_policy_url": getattr(settings, "CHANGES_POLICY_URL", None),
+            "refunds_policy_url": getattr(settings, "REFUNDS_POLICY_URL", None),
+            "privacy_policy_url": getattr(settings, "PRIVACY_POLICY_URL", None),
+            "terms_url": getattr(settings, "TERMS_URL", None),
+        })

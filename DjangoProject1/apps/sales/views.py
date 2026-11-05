@@ -28,6 +28,7 @@ from .services import (
     mark_sale_paid,
     validate_wompi_event_signature,
     wompi_integrity_signature,
+    send_sale_confirmation_email,
 )
 from .ticket_verification import get_ticket_from_verification_token
 
@@ -145,7 +146,13 @@ class AdminSaleView(APIView):
                 )
                 if created:
                     customer.set_password(request.data["identification_number"])
-                    customer.save(update_fields=["password"])
+                    customer.password_change_required = True
+                    customer.is_active = True
+                    customer.save(update_fields=[
+                        "password",
+                        "password_change_required",
+                        "is_active",
+                    ])
 
                 trip = Trip.objects.select_related("bus", "fare").get(
                     pk=request.data["trip"]
@@ -274,6 +281,31 @@ class SaleInvoiceView(APIView):
                 "detail": "La factura todavía no ha sido generada.",
             })
         return Response(FactusInvoiceSerializer(invoice).data)
+
+
+class SaleConfirmationResendView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, sale_id):
+        sale = Sale.objects.filter(pk=sale_id).first()
+        if sale is None:
+            return Response({"detail": "La venta no existe."}, status=status.HTTP_404_NOT_FOUND)
+        if request.user.role != "admin" and sale.buyer_id != request.user.id:
+            return Response({"detail": "No puedes reenviar esta confirmación."}, status=status.HTTP_403_FORBIDDEN)
+        if sale.status != Sale.Status.PAID:
+            return Response(
+                {"code": "sale_not_paid", "detail": "Solo se puede confirmar una compra pagada."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not send_sale_confirmation_email(sale.id, force=True):
+            return Response(
+                {"code": "email_unavailable", "detail": "No fue posible enviar el correo."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        return Response(
+            {"detail": "Se solicitó el reenvío de la confirmación."},
+            status=status.HTTP_202_ACCEPTED,
+        )
 
 
 class WompiCheckoutView(APIView):

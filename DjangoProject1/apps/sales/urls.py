@@ -5,6 +5,7 @@ from .views import (
     AdminSaleView,
     FactusInvoiceRetryView,
     SaleInvoiceView,
+    SaleConfirmationResendView,
     TicketVerificationView,
     SaleViewSet,
     TicketViewSet,
@@ -33,6 +34,11 @@ urlpatterns = [
         "sales/<int:sale_id>/invoice/",
         SaleInvoiceView.as_view(),
         name="sale-invoice",
+    ),
+    path(
+        "sales/<int:sale_id>/resend-confirmation/",
+        SaleConfirmationResendView.as_view(),
+        name="sale-confirmation-resend",
     ),
     path("wompi/checkout/", WompiCheckoutView.as_view(), name="wompi-checkout"),
     path(

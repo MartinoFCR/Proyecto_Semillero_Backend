@@ -2,6 +2,9 @@ import hashlib
 import hmac
 import json
 import os
+from django.conf import settings
+from django.core.mail import EmailMultiAlternatives
+from smtplib import SMTPException
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -106,7 +109,52 @@ def mark_sale_paid(sale, payment_status, provider_reference, raw_response):
         transaction.on_commit(
             lambda sale_id=sale.pk: issue_factus_invoice(sale_id)
         )
+        transaction.on_commit(
+            lambda sale_id=sale.pk: send_sale_confirmation_email(sale_id)
+        )
         return sale
+
+
+def send_sale_confirmation_email(sale_id, force=False):
+    with transaction.atomic():
+        sale = Sale.objects.select_for_update().select_related(
+            "buyer",
+            "trip__route__origin",
+            "trip__route__destination",
+        ).prefetch_related("items", "tickets").get(pk=sale_id)
+        if sale.status != Sale.Status.PAID:
+            return False
+        if sale.email_confirmation_sent_at and not force:
+            return False
+        tickets = list(sale.tickets.select_related("seat").all())
+        lines = [
+            f"- {ticket.passenger_name}, silla {ticket.seat.seat_number}, "
+            f"tiquete {ticket.ticket_code}"
+            for ticket in tickets
+        ]
+        body = (
+            f"Compra #{sale.pk} confirmada.\n\n"
+            f"Total pagado: ${sale.amount_cents / 100:,.2f} COP\n"
+            f"Ruta: {sale.trip.route.origin.place_name} -> "
+            f"{sale.trip.route.destination.place_name}\n"
+            f"Salida: {sale.trip.date_time_start}\n\n"
+            "Boletas:\n" + "\n".join(lines) +
+            f"\n\nIngresa a {settings.FRONTEND_BASE_URL}/clientes/compras "
+            "para consultar la factura y descargar tus boletas."
+        )
+        message = EmailMultiAlternatives(
+            subject=f"Confirmación de compra #{sale.pk}",
+            body=body,
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            to=[sale.buyer.email],
+        )
+        try:
+            message.send(fail_silently=False)
+        except (SMTPException, OSError):
+            return False
+        sale.email_confirmation_sent_at = timezone.now()
+        sale.save(update_fields=["email_confirmation_sent_at", "updated_at"])
+        return True
 
 
 def get_wompi_transaction(transaction_id):
