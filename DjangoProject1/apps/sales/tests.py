@@ -2,6 +2,8 @@ from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.contrib.gis.geos import Point
+from django.utils import timezone
+from datetime import timedelta
 from django.urls import reverse
 from rest_framework.test import APITestCase
 
@@ -9,7 +11,9 @@ from DjangoProject1.apps.fleet.models import Bus, Seat
 from DjangoProject1.apps.geography.models import City, Department, Place
 from DjangoProject1.apps.routes.models import Route
 from DjangoProject1.apps.sales.models import (
+    AdminSaleIdempotency,
     FactusInvoice,
+    Payment,
     Sale,
     SaleItem,
     Ticket,
@@ -192,6 +196,164 @@ class MultiTicketCheckoutTests(APITestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["seats"][0]["status"], "available")
+
+    def test_admin_sale_accepts_multiple_seats_and_creates_one_payment(self):
+        admin = get_user_model().objects.create_user(
+            username="admin",
+            email="admin@example.com",
+            identification_number="100000003",
+            role=get_user_model().Role.ADMIN,
+        )
+        self.client.force_authenticate(admin)
+        response = self.client.post(
+            reverse("admin-sale"),
+            {
+                "identification_number": "200000001",
+                "name": "Juan Perez",
+                "email": "juan@example.com",
+                "telephone": "3001234567",
+                "trip": self.trip.id,
+                "seats": [seat.id for seat in self.seats],
+                "payment_method": "cash",
+            },
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="admin-sale-1",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["quantity"], 2)
+        self.assertEqual(response.data["amount_cents"], 5000000)
+        self.assertEqual(response.data["tickets"][0]["seat_number"], "1")
+        self.assertEqual(Sale.objects.count(), 1)
+        self.assertEqual(Payment.objects.count(), 1)
+        self.assertEqual(Ticket.objects.count(), 2)
+        self.assertEqual(AdminSaleIdempotency.objects.count(), 1)
+
+    def test_admin_sale_rejects_all_seats_when_one_is_reserved(self):
+        admin = get_user_model().objects.create_user(
+            username="admin-reserved",
+            email="admin-reserved@example.com",
+            identification_number="100000004",
+            role=get_user_model().Role.ADMIN,
+        )
+        Sale.objects.create(
+            buyer=self.user,
+            created_by=self.user,
+            source=Sale.Source.ONLINE,
+            payment_method=Sale.PaymentMethod.WOMPI,
+            status=Sale.Status.PENDING,
+            amount_cents=2500000,
+            trip=self.trip,
+            seat=self.seats[0],
+            passenger_identification="200000010",
+            passenger_name="Reserva",
+            passenger_email="reserva@example.com",
+            expires_at=timezone.now() + timedelta(minutes=5),
+        )
+        self.client.force_authenticate(admin)
+        response = self.client.post(
+            reverse("admin-sale"),
+            {
+                "identification_number": "200000011",
+                "name": "Juan Perez",
+                "email": "juan2@example.com",
+                "telephone": "3001234567",
+                "trip": self.trip.id,
+                "seats": [seat.id for seat in self.seats],
+                "payment_method": "cash",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.data["code"], "seats_unavailable")
+        self.assertEqual(response.data["unavailable_seats"][0]["reason"], "reserved")
+        self.assertEqual(Sale.objects.filter(source=Sale.Source.ADMIN).count(), 0)
+
+    def test_admin_sale_idempotency_rejects_changed_content(self):
+        admin = get_user_model().objects.create_user(
+            username="admin-idempotent",
+            email="admin-idempotent@example.com",
+            identification_number="100000005",
+            role=get_user_model().Role.ADMIN,
+        )
+        self.client.force_authenticate(admin)
+        payload = {
+            "identification_number": "200000012",
+            "name": "Juan Perez",
+            "email": "juan3@example.com",
+            "telephone": "3001234567",
+            "trip": self.trip.id,
+            "seat": self.seats[0].id,
+            "payment_method": "cash",
+        }
+        first = self.client.post(
+            reverse("admin-sale"),
+            payload,
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="admin-sale-2",
+        )
+        second = self.client.post(
+            reverse("admin-sale"),
+            {**payload, "telephone": "3000000000"},
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="admin-sale-2",
+        )
+
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 409)
+
+    def test_admin_sale_idempotency_returns_original_sale(self):
+        admin = get_user_model().objects.create_user(
+            username="admin-replay",
+            email="admin-replay@example.com",
+            identification_number="100000006",
+            role=get_user_model().Role.ADMIN,
+        )
+        self.client.force_authenticate(admin)
+        payload = {
+            "identification_number": "200000013",
+            "name": "Juan Perez",
+            "email": "juan4@example.com",
+            "telephone": "3001234567",
+            "trip": self.trip.id,
+            "seat": self.seats[0].id,
+            "payment_method": "cash",
+        }
+        first = self.client.post(
+            reverse("admin-sale"),
+            payload,
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="admin-sale-3",
+        )
+        second = self.client.post(
+            reverse("admin-sale"),
+            payload,
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="admin-sale-3",
+        )
+
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(second.data["id"], first.data["id"])
+        self.assertEqual(Sale.objects.filter(source=Sale.Source.ADMIN).count(), 1)
+
+    def test_admin_sale_is_forbidden_for_client(self):
+        response = self.client.post(
+            reverse("admin-sale"),
+            {
+                "identification_number": "200000014",
+                "name": "Juan Perez",
+                "email": "juan5@example.com",
+                "telephone": "3001234567",
+                "trip": self.trip.id,
+                "seat": self.seats[0].id,
+                "payment_method": "cash",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 403)
 
     @patch("DjangoProject1.apps.sales.services.issue_factus_invoice")
     def test_approved_payment_issues_each_ticket_only_once(self, _invoice):

@@ -82,6 +82,23 @@ class Sale(models.Model):
         return self.items.count() or 1
 
 
+class AdminSaleIdempotency(models.Model):
+    key = models.CharField(max_length=120, unique=True)
+    request_hash = models.CharField(max_length=64)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+    )
+    sale = models.OneToOneField(
+        Sale,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="admin_idempotency_record",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+
 class SaleItem(models.Model):
     sale = models.ForeignKey(
         Sale,

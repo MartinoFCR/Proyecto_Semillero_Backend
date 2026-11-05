@@ -7,6 +7,7 @@ from .ticket_verification import ticket_verification_token, ticket_verification_
 class TicketSerializer(serializers.ModelSerializer):
     verification_token = serializers.SerializerMethodField()
     verification_url = serializers.SerializerMethodField()
+    seat_number = serializers.CharField(source="seat.seat_number", read_only=True)
 
     class Meta:
         model = Ticket
@@ -70,6 +71,7 @@ class SaleSerializer(serializers.ModelSerializer):
     payment = PaymentSerializer(read_only=True)
     factus_invoice = FactusInvoiceSerializer(read_only=True)
     quantity = serializers.IntegerField(read_only=True)
+    unit_amount_cents = serializers.SerializerMethodField()
     route = serializers.SerializerMethodField()
     trip_start = serializers.DateTimeField(
         source="trip.date_time_start",
@@ -86,6 +88,7 @@ class SaleSerializer(serializers.ModelSerializer):
             "payment_method",
             "status",
             "amount_cents",
+            "unit_amount_cents",
             "trip",
             "seat",
             "passenger_identification",
@@ -121,3 +124,6 @@ class SaleSerializer(serializers.ModelSerializer):
             "origin": route.origin.place_name,
             "destination": route.destination.place_name,
         }
+
+    def get_unit_amount_cents(self, sale):
+        return sale.trip.fare.amount_cents

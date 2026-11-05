@@ -944,17 +944,83 @@ Solicitud:
   "email": "juan@example.com",
   "telephone": "3001234567",
   "trip": 15,
-  "seat": 5,
+  "seats": [5, 6, 7],
   "payment_method": "cash"
 }
 ```
 
+Los valores de `seats` son los ID de las sillas. Se aceptan entre 1 y 10
+sillas, todas para el mismo cliente. Para conservar compatibilidad también se
+acepta `seat` como una sola silla, pero no se pueden enviar `seat` y `seats`
+en la misma solicitud.
+
 `payment_method` puede ser `cash`, `transfer` o `card`.
 
-El backend obtiene la tarifa desde el viaje, crea la venta como `paid` y
-genera el tiquete. No se debe enviar `amount_cents`: el frontend no puede
-definir el precio. Si la silla tiene una reserva online vigente, responde
-`409 Conflict`. Las reservas online vencen después de 5 minutos.
+El backend obtiene la tarifa desde el viaje y calcula
+`amount_cents = tarifa_del_viaje * cantidad_de_sillas`. No se debe enviar
+`amount_cents` ni ningún precio. El viaje debe estar programado y tener una
+tarifa válida.
+
+La operación es atómica: crea una sola venta `paid`, un pago aprobado, un
+`SaleItem` y un tiquete por cada silla, o no crea ninguno. Todas las sillas
+deben pertenecer al bus del viaje. Una silla vendida o con una reserva online
+vigente causa `409 Conflict` para toda la solicitud; las reservas online
+vencen después de 5 minutos.
+
+Para evitar duplicados, se recomienda enviar:
+
+```http
+Idempotency-Key: identificador-unico-del-intento
+```
+
+La misma clave con el mismo contenido devuelve la venta original con `200`,
+sin crear otra venta, pago, tiquete o factura. La misma clave con contenido
+diferente devuelve `409 Conflict`. La clave también es segura ante solicitudes
+simultáneas.
+
+Respuesta `201 Created` (resumen):
+
+```json
+{
+  "id": 25,
+  "status": "paid",
+  "trip": 15,
+  "quantity": 3,
+  "unit_amount_cents": 2500000,
+  "amount_cents": 7500000,
+  "payment_method": "cash",
+  "tickets": [
+    {
+      "id": 30,
+      "trip": 15,
+      "seat": 5,
+      "ticket_code": "codigo-tiquete-30",
+      "status": "issued",
+      "verification_url": "https://portalbic.site/api/sales/tickets/verify/?token=..."
+    }
+  ],
+  "factus_invoice": {
+    "status": "issued",
+    "number": "NUMERO-FACTURA",
+    "cufe": "CUFE",
+    "public_url": "https://..."
+  }
+}
+```
+
+`tickets` contiene una entrada por silla e incluye los datos del pasajero,
+emisión y verificación QR. Si Factus falla, la venta y los tiquetes se
+conservan y `factus_invoice.status` será `error` con `error_message`; la
+factura puede reintentarse con el endpoint administrativo de reintento.
+
+Errores:
+
+- `400`: datos inválidos, viaje sin tarifa, viaje no programado, sillas
+  duplicadas o que no pertenecen al bus.
+- `403`: el usuario no tiene rol `admin`.
+- `409` con `code: seats_unavailable`: una o más sillas están `sold` o
+  `reserved`. La propiedad `unavailable_seats` incluye `seat`, `seat_number`
+  y `reason`.
 
 Si el documento no existe, el endpoint crea un usuario cliente. Actualmente
 no hay un endpoint independiente para buscar o crear clientes con un payload

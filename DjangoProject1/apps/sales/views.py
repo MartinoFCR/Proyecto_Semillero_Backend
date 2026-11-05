@@ -1,4 +1,6 @@
 import os
+import hashlib
+import json
 from datetime import timedelta
 
 from django.contrib.auth import get_user_model
@@ -14,7 +16,13 @@ from rest_framework.viewsets import ReadOnlyModelViewSet
 
 from DjangoProject1.apps.fleet.models import Seat
 from DjangoProject1.apps.trips.models import Trip
-from .models import Payment, Sale, SaleItem, Ticket
+from .models import (
+    AdminSaleIdempotency,
+    Payment,
+    Sale,
+    SaleItem,
+    Ticket,
+)
 from .permissions import IsAdminOrSaleOwner
 from .serializers import (
     FactusInvoiceSerializer,
@@ -114,10 +122,50 @@ class TicketVerificationView(APIView):
 
 class AdminSaleView(APIView):
     permission_classes = [IsAuthenticated]
+    max_tickets = 10
 
     def post(self, request):
         if request.user.role != "admin":
-            return Response({"detail": "Solo un administrador puede registrar ventas."}, status=403)
+            return Response(
+                {"detail": "Solo un administrador puede registrar ventas."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        has_seats = "seats" in request.data
+        has_seat = "seat" in request.data
+        if has_seats and has_seat:
+            return Response(
+                {"detail": "Envía seats o seat, pero no ambos."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not has_seats and not has_seat:
+            return Response(
+                {"seats": "Este campo es obligatorio."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        raw_seats = request.data.get("seats", [request.data.get("seat")])
+        if not isinstance(raw_seats, list):
+            return Response(
+                {"seats": "Debe ser una lista de identificadores de silla."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not 1 <= len(raw_seats) <= self.max_tickets:
+            return Response(
+                {"seats": f"Debe contener entre 1 y {self.max_tickets} sillas."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            seat_ids = [int(value) for value in raw_seats]
+        except (TypeError, ValueError):
+            return Response(
+                {"seats": "Todos los identificadores deben ser válidos."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if len(set(seat_ids)) != len(seat_ids):
+            return Response(
+                {"seats": "No se puede repetir una silla."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         required = (
             "identification_number",
@@ -125,7 +173,6 @@ class AdminSaleView(APIView):
             "email",
             "telephone",
             "trip",
-            "seat",
             "payment_method",
         )
         missing = [field for field in required if field not in request.data]
@@ -140,7 +187,77 @@ class AdminSaleView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        try:
+            trip_id = int(request.data["trip"])
+        except (TypeError, ValueError):
+            return Response(
+                {"trip": "El identificador del viaje no es válido."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        idempotency_key = request.headers.get("Idempotency-Key", "").strip()
+        request_hash = hashlib.sha256(
+            json.dumps(
+                {
+                    "identification_number": request.data["identification_number"],
+                    "name": request.data["name"],
+                    "email": request.data["email"],
+                    "telephone": request.data["telephone"],
+                    "identification_document_code": request.data.get(
+                        "identification_document_code",
+                        "",
+                    ),
+                    "trip": trip_id,
+                    "seats": sorted(seat_ids),
+                    "payment_method": request.data["payment_method"],
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
+
         with transaction.atomic():
+            idempotency_record = None
+            if idempotency_key:
+                idempotency_record, created = (
+                    AdminSaleIdempotency.objects.select_for_update().get_or_create(
+                        key=idempotency_key,
+                        defaults={
+                            "request_hash": request_hash,
+                            "created_by": request.user,
+                        },
+                    )
+                )
+                if not created:
+                    if idempotency_record.request_hash != request_hash:
+                        return Response(
+                            {
+                                "code": "idempotency_key_reused",
+                                "detail": (
+                                    "La clave de idempotencia ya fue usada "
+                                    "con otro contenido."
+                                ),
+                            },
+                            status=status.HTTP_409_CONFLICT,
+                        )
+                    if idempotency_record.sale_id:
+                        sale = Sale.objects.select_related(
+                            "trip__route__origin",
+                            "trip__route__destination",
+                        ).prefetch_related(
+                            "tickets__seat",
+                            "payment",
+                            "factus_invoice",
+                            "items",
+                        ).get(pk=idempotency_record.sale_id)
+                        return Response(
+                            SaleSerializer(
+                                sale,
+                                context={"request": request},
+                            ).data,
+                            status=status.HTTP_200_OK,
+                        )
+
             try:
                 customer, created = User.objects.get_or_create(
                     identification_number=request.data["identification_number"],
@@ -163,26 +280,93 @@ class AdminSaleView(APIView):
                     ])
 
                 trip = Trip.objects.select_related("bus", "fare").get(
-                    pk=request.data["trip"]
+                    pk=trip_id,
+                    trip_state=Trip.TripState.SCHEDULED,
                 )
-                seat = trip.bus.seats.select_for_update().get(
-                    pk=request.data["seat"]
+                if not trip.fare or trip.fare.amount_cents <= 0:
+                    return Response(
+                        {"detail": "El viaje no tiene una tarifa válida."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                seats = list(
+                    trip.bus.seats.select_for_update().filter(
+                        pk__in=seat_ids,
+                    ).order_by("pk")
                 )
-                amount_cents = trip.fare.amount_cents
-                active_hold = Sale.objects.filter(
+                if len(seats) != len(seat_ids):
+                    return Response(
+                        {
+                            "detail": (
+                                "Una o más sillas no pertenecen al bus "
+                                "del viaje."
+                            )
+                        },
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                seats_by_id = {seat.pk: seat for seat in seats}
+                now = timezone.now()
+                unavailable = []
+                issued_seats = set(
+                    Ticket.objects.filter(
+                        trip=trip,
+                        seat_id__in=seat_ids,
+                        status=Ticket.Status.ISSUED,
+                    ).values_list("seat_id", flat=True)
+                )
+                for seat_id in issued_seats:
+                    unavailable.append({
+                        "seat": seat_id,
+                        "seat_number": seats_by_id[seat_id].seat_number,
+                        "reason": "sold",
+                    })
+                primary_hold_ids = set(Sale.objects.filter(
                     trip=trip,
-                    seat=seat,
                     source=Sale.Source.ONLINE,
                     status=Sale.Status.PENDING,
-                ).first()
-                if active_hold:
-                    if active_hold.has_active_hold():
-                        return Response(
-                            {"detail": "La silla está reservada temporalmente."},
-                            status=status.HTTP_409_CONFLICT,
-                        )
-                    active_hold.status = Sale.Status.EXPIRED
-                    active_hold.save(update_fields=["status", "updated_at"])
+                    seat_id__in=seat_ids,
+                ).values_list("pk", flat=True))
+                item_hold_ids = set(SaleItem.objects.filter(
+                    sale__trip=trip,
+                    sale__source=Sale.Source.ONLINE,
+                    sale__status=Sale.Status.PENDING,
+                    seat_id__in=seat_ids,
+                ).values_list("sale_id", flat=True))
+                holds = Sale.objects.select_for_update().filter(
+                    pk__in=primary_hold_ids | item_hold_ids,
+                ).prefetch_related("items")
+                reserved_seats = set()
+                for hold in {
+                    hold.pk: hold for hold in holds
+                }.values():
+                    held_ids = {hold.seat_id}
+                    held_ids.update(item.seat_id for item in hold.items.all())
+                    held_ids.intersection_update(seat_ids)
+                    if hold.expires_at and hold.expires_at > now:
+                        reserved_seats.update(held_ids)
+                    else:
+                        hold.status = Sale.Status.EXPIRED
+                        hold.save(update_fields=["status", "updated_at"])
+                for seat_id in reserved_seats - issued_seats:
+                    unavailable.append({
+                        "seat": seat_id,
+                        "seat_number": seats_by_id[seat_id].seat_number,
+                        "reason": "reserved",
+                    })
+                if unavailable:
+                    unavailable.sort(key=lambda item: item["seat"])
+                    return Response(
+                        {
+                            "code": "seats_unavailable",
+                            "detail": (
+                                "Una o más sillas ya no están disponibles. "
+                                "No se registró la venta."
+                            ),
+                            "unavailable_seats": unavailable,
+                        },
+                        status=status.HTTP_409_CONFLICT,
+                    )
+                first_seat = seats_by_id[seat_ids[0]]
+                amount_cents = trip.fare.amount_cents * len(seat_ids)
             except (
                 Seat.DoesNotExist,
                 Trip.DoesNotExist,
@@ -203,7 +387,7 @@ class AdminSaleView(APIView):
                 status=Sale.Status.PAID,
                 amount_cents=amount_cents,
                 trip=trip,
-                seat=seat,
+                seat=first_seat,
                 passenger_identification=request.data["identification_number"],
                 passenger_identification_document_code=request.data.get(
                     "identification_document_code",
@@ -212,39 +396,71 @@ class AdminSaleView(APIView):
                 passenger_name=request.data["name"],
                 passenger_email=request.data["email"],
                 passenger_telephone=request.data["telephone"],
+                idempotency_key=idempotency_key or None,
             )
-            SaleItem.objects.create(
-                sale=sale,
-                trip=trip,
-                seat=seat,
-                passenger_identification=request.data["identification_number"],
-                passenger_identification_document_code=request.data.get(
-                    "identification_document_code",
-                    "",
-                ),
-                passenger_name=request.data["name"],
-                passenger_email=request.data["email"],
-                passenger_telephone=request.data["telephone"],
-            )
-            create_ticket_for_sale(
-                sale,
-                trip,
-                seat,
-                {
-                    "identification_number": request.data["identification_number"],
-                    "identification_document_code": request.data.get(
+            SaleItem.objects.bulk_create([
+                SaleItem(
+                    sale=sale,
+                    trip=trip,
+                    seat=seat,
+                    passenger_identification=request.data[
+                        "identification_number"
+                    ],
+                    passenger_identification_document_code=request.data.get(
                         "identification_document_code",
                         "",
                     ),
-                    "name": request.data["name"],
-                    "email": request.data["email"],
-                    "telephone": request.data["telephone"],
-                },
+                    passenger_name=request.data["name"],
+                    passenger_email=request.data["email"],
+                    passenger_telephone=request.data["telephone"],
+                )
+                for seat in seats
+            ])
+            Payment.objects.create(
+                sale=sale,
+                provider="manual",
+                provider_reference=f"ADMIN-SALE-{sale.pk}",
+                status="APPROVED",
+                amount_cents=amount_cents,
+                processed_at=timezone.now(),
             )
+            for seat in seats:
+                create_ticket_for_sale(
+                    sale,
+                    trip,
+                    seat,
+                    {
+                        "identification_number": request.data[
+                            "identification_number"
+                        ],
+                        "identification_document_code": request.data.get(
+                            "identification_document_code",
+                            "",
+                        ),
+                        "name": request.data["name"],
+                        "email": request.data["email"],
+                        "telephone": request.data["telephone"],
+                    },
+                )
+            if idempotency_record is not None:
+                idempotency_record.sale = sale
+                idempotency_record.save(update_fields=["sale"])
             transaction.on_commit(
                 lambda sale_id=sale.pk: issue_factus_invoice(sale_id)
             )
-        return Response(SaleSerializer(sale).data, status=status.HTTP_201_CREATED)
+        sale = Sale.objects.select_related(
+            "trip__route__origin",
+            "trip__route__destination",
+        ).prefetch_related(
+            "tickets__seat",
+            "payment",
+            "factus_invoice",
+            "items",
+        ).get(pk=sale.pk)
+        return Response(
+            SaleSerializer(sale, context={"request": request}).data,
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class FactusInvoiceRetryView(APIView):

@@ -173,6 +173,7 @@ Las migraciones nuevas de esta versión incluyen:
 accounts 0004_user_password_changed_at_accountactiontoken
 accounts 0005_user_password_change_required
 sales    0009_sale_email_confirmation_sent_at
+sales    0010_adminsaleidempotency
 support  0001_initial
 ```
 
@@ -186,6 +187,7 @@ sales    0005_saleitem_sale_idempotency_key
 sales    0006_passenger_document_codes
 sales    0007_alter_sale_status
 sales    0009_sale_email_confirmation_sent_at
+sales    0010_adminsaleidempotency
 fleet    0004_bustype_bus_bus_type
 support  0001_initial
 ```
