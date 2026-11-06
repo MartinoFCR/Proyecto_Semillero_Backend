@@ -232,6 +232,76 @@ class MultiTicketCheckoutTests(APITestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["seats"][0]["status"], "available")
 
+    def test_availability_returns_all_thirty_seats_with_statuses(self):
+        from DjangoProject1.apps.fleet.services import complete_seats_for_bus
+        complete_seats_for_bus(self.bus, target_capacity=30)
+        all_bus_seats = list(Seat.objects.filter(bus=self.bus).order_by("id"))
+        self.assertEqual(len(all_bus_seats), 30)
+
+        # Asiento 1 vendido (ticket emitido)
+        self._create_paid_ticket(all_bus_seats[0])
+
+        # Asientos 2 y 3 reservados en una venta pendiente con SaleItem
+        pending_sale = Sale.objects.create(
+            buyer=self.user,
+            created_by=self.user,
+            source=Sale.Source.ONLINE,
+            payment_method=Sale.PaymentMethod.WOMPI,
+            status=Sale.Status.PENDING,
+            amount_cents=5000000,
+            trip=self.trip,
+            seat=all_bus_seats[1],
+            passenger_identification="111111",
+            passenger_name="Reserva 1",
+            passenger_email="res1@example.com",
+            expires_at=timezone.now() + timedelta(minutes=10),
+        )
+        SaleItem.objects.create(
+            sale=pending_sale,
+            trip=self.trip,
+            seat=all_bus_seats[2],
+            passenger_identification="222222",
+            passenger_name="Reserva 2",
+            passenger_email="res2@example.com",
+        )
+
+        self.client.force_authenticate(None)
+        response = self.client.get(
+            reverse("trip-seats", kwargs={"trip_id": self.trip.id}),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        seats = response.data["seats"]
+        self.assertEqual(len(seats), 30)
+
+        seats_by_id = {s["id"]: s for s in seats}
+        self.assertEqual(seats_by_id[all_bus_seats[0].id]["status"], "sold")
+        self.assertEqual(seats_by_id[all_bus_seats[1].id]["status"], "reserved")
+        self.assertEqual(seats_by_id[all_bus_seats[2].id]["status"], "reserved")
+
+        available_count = sum(1 for s in seats if s["status"] == "available")
+        self.assertEqual(available_count, 27)
+
+        # Validar que se mantiene el límite de 10 por compra
+        self.client.force_authenticate(self.user)
+        too_many_passengers = [
+            {
+                "seat": all_bus_seats[i].id,
+                "identification_document_code": "13",
+                "identification_number": f"90000{i:02d}",
+                "name": f"Pasajero {i}",
+                "email": f"p{i}@example.com",
+            }
+            for i in range(3, 14)  # 11 pasajeros (supera el límite de 10)
+        ]
+        resp_limit = self.client.post(
+            reverse("wompi-checkout"),
+            {"trip": self.trip.id, "passengers": too_many_passengers},
+            format="json",
+        )
+        self.assertEqual(resp_limit.status_code, 400)
+        self.assertIn("máximo 10", str(resp_limit.data))
+
     def test_admin_sale_accepts_multiple_seats_and_creates_one_payment(self):
         admin = get_user_model().objects.create_user(
             username="admin",
@@ -776,3 +846,114 @@ class MultiTicketCheckoutTests(APITestCase):
         self.assertEqual(used_response.status_code, 200)
         self.assertFalse(used_response.data["valid"])
         self.assertEqual(used_response.data["status"], "used")
+
+    def test_wompi_checkout_rejects_seat_held_in_sale_item(self):
+        # Cliente 1 tiene asiento 0 como principal y asiento 1 en SaleItem
+        holding_sale = Sale.objects.create(
+            buyer=self.user,
+            created_by=self.user,
+            source=Sale.Source.ONLINE,
+            payment_method=Sale.PaymentMethod.WOMPI,
+            status=Sale.Status.PENDING,
+            amount_cents=5000000,
+            trip=self.trip,
+            seat=self.seats[0],
+            passenger_identification="100000001",
+            passenger_name="Buyer 1",
+            passenger_email="buyer1@example.com",
+            expires_at=timezone.now() + timedelta(minutes=10),
+        )
+        SaleItem.objects.create(
+            sale=holding_sale,
+            trip=self.trip,
+            seat=self.seats[1],
+            passenger_identification="100000002",
+            passenger_name="Buyer 2",
+            passenger_email="buyer2@example.com",
+        )
+
+        other_user = get_user_model().objects.create_user(
+            username="buyer-two",
+            password="secret-pass-123",
+            email="otherbuyer@example.com",
+            identification_number="888888888",
+            role=get_user_model().Role.CLIENT,
+        )
+        self.client.force_authenticate(other_user)
+
+        # Cliente 2 intenta reservar el asiento 1 (que está en SaleItem de la reserva del cliente 1)
+        response = self.client.post(
+            reverse("wompi-checkout"),
+            {
+                "trip": self.trip.id,
+                "passengers": [
+                    {
+                        "seat": self.seats[1].id,
+                        "identification_document_code": "13",
+                        "identification_number": "888888888",
+                        "name": "Buyer Two",
+                        "email": "otherbuyer@example.com",
+                    }
+                ],
+            },
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="conflict-checkout-key-1",
+        )
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("está reservada", response.data.get("detail", ""))
+
+    def test_admin_and_client_purchase_auto_complete_bus_seats(self):
+        # Bus con capacidad 30 pero solo 2 asientos creados inicialmente
+        self.bus.capacity = 30
+        self.bus.save(update_fields=["capacity"])
+        self.assertEqual(Seat.objects.filter(bus=self.bus).count(), 2)
+
+        # 1. Compra de cliente para asiento 15 completa los asientos automáticamente
+        # Se genera el asiento 15 con el auto-complete
+        from DjangoProject1.apps.fleet.services import complete_seats_for_bus
+        complete_seats_for_bus(self.bus, 30)
+        seat_15 = Seat.objects.get(bus=self.bus, seat_number="15")
+        seat_16 = Seat.objects.get(bus=self.bus, seat_number="16")
+
+        # Compra administrativa
+        admin = self._create_admin("super-admin-seats")
+        self.client.force_authenticate(admin)
+        admin_resp = self.client.post(
+            reverse("admin-sale"),
+            {
+                "trip": self.trip.id,
+                "seats": [seat_15.id],
+                "identification_number": "555555555",
+                "name": "Pasajero Quince",
+                "email": "p15@example.com",
+                "telephone": "3000000015",
+                "payment_method": "cash",
+            },
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="admin-sale-seat-15",
+        )
+        self.assertEqual(admin_resp.status_code, 201)
+        self.assertTrue(Ticket.objects.filter(seat=seat_15, trip=self.trip).exists())
+
+        # Compra cliente
+        self.client.force_authenticate(self.user)
+        with patch("DjangoProject1.apps.sales.views.wompi_integrity_signature", return_value="sig"):
+            client_resp = self.client.post(
+                reverse("wompi-checkout"),
+                {
+                    "trip": self.trip.id,
+                    "passengers": [
+                        {
+                            "seat": seat_16.id,
+                            "identification_document_code": "13",
+                            "identification_number": "666666666",
+                            "name": "Pasajero Dieciséis",
+                            "email": "p16@example.com",
+                        }
+                    ],
+                },
+                format="json",
+                HTTP_IDEMPOTENCY_KEY="client-checkout-seat-16",
+            )
+        self.assertEqual(client_resp.status_code, 201)
+        self.assertEqual(Seat.objects.filter(bus=self.bus).count(), 30)

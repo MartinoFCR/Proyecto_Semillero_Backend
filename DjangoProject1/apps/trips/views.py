@@ -6,7 +6,8 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.viewsets import ModelViewSet, ReadOnlyModelViewSet
 from django.utils import timezone
-from DjangoProject1.apps.sales.models import Sale, Ticket
+from DjangoProject1.apps.fleet.services import complete_seats_for_bus
+from DjangoProject1.apps.sales.models import Sale, SaleItem, Ticket
 
 from DjangoProject1.apps.trips.models import (
     Trip,
@@ -94,6 +95,9 @@ class AvailableSeatsView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
+        if trip.bus.seats.count() < trip.bus.capacity:
+            complete_seats_for_bus(trip.bus, trip.bus.capacity)
+
         now = timezone.now()
         Sale.objects.filter(
             trip=trip,
@@ -117,8 +121,23 @@ class AvailableSeatsView(APIView):
                 status=Sale.Status.PENDING,
             ).values_list("seat_id", flat=True)
         )
+        held_seats.update(
+            SaleItem.objects.filter(
+                sale__trip=trip,
+                sale__source=Sale.Source.ONLINE,
+                sale__status=Sale.Status.PENDING,
+            ).values_list("seat_id", flat=True)
+        )
+        all_seats = list(trip.bus.seats.all())
+        all_seats.sort(
+            key=lambda s: (
+                int(s.row) if str(s.row).isdigit() else 0,
+                int(s.col) if str(s.col).isdigit() else 0,
+                int(s.seat_number) if str(s.seat_number).isdigit() else 0,
+            )
+        )
         seats = []
-        for seat in trip.bus.seats.all().order_by("seat_number"):
+        for seat in all_seats:
             if seat.id in issued_seats:
                 state = "sold"
             elif seat.id in held_seats:

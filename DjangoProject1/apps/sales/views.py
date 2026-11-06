@@ -42,6 +42,7 @@ from .services import (
     send_sale_confirmation_email,
 )
 from .ticket_verification import get_ticket_from_verification_token
+from DjangoProject1.apps.fleet.services import complete_seats_for_bus
 
 User = get_user_model()
 
@@ -482,6 +483,8 @@ class AdminSaleView(APIView):
                         {"detail": "El viaje no tiene una tarifa válida."},
                         status=status.HTTP_400_BAD_REQUEST,
                     )
+                if trip.bus.seats.count() < trip.bus.capacity:
+                    complete_seats_for_bus(trip.bus, trip.bus.capacity)
                 seats = list(
                     trip.bus.seats.select_for_update().filter(
                         pk__in=seat_ids,
@@ -840,6 +843,8 @@ class WompiCheckoutView(APIView):
 
         with transaction.atomic():
             User.objects.select_for_update().get(pk=request.user.pk)
+            if trip.bus.seats.count() < trip.bus.capacity:
+                complete_seats_for_bus(trip.bus, trip.bus.capacity)
             seats = list(
                 trip.bus.seats.select_for_update().filter(
                     pk__in=seats_by_id,
@@ -852,35 +857,64 @@ class WompiCheckoutView(APIView):
                 )
             seats_by_id = {seat.pk: seat for seat in seats}
             now = timezone.now()
+
+            # 1. Validar sillas vendidas (tiquetes emitidos)
+            issued_seats = set(
+                Ticket.objects.filter(
+                    trip=trip,
+                    seat_id__in=seats_by_id.keys(),
+                    status=Ticket.Status.ISSUED,
+                ).values_list("seat_id", flat=True)
+            )
             for passenger in normalized_passengers:
                 seat = seats_by_id[passenger["seat"]]
-                if Ticket.objects.filter(
-                    trip=trip,
-                    seat=seat,
-                    status=Ticket.Status.ISSUED,
-                ).exists():
+                if seat.pk in issued_seats:
                     return Response(
                         {"detail": f"La silla {seat.seat_number} ya está vendida."},
                         status=status.HTTP_409_CONFLICT,
                     )
-                holds = Sale.objects.filter(
-                    trip=trip,
-                    seat=seat,
-                    source=Sale.Source.ONLINE,
-                    status=Sale.Status.PENDING,
-                ).select_for_update()
-                for active_hold in holds:
-                    if active_hold.expires_at and active_hold.expires_at > now:
-                        return Response(
-                            {
-                                "detail": (
-                                    f"La silla {seat.seat_number} está reservada."
-                                )
-                            },
-                            status=status.HTTP_409_CONFLICT,
-                        )
-                    active_hold.status = Sale.Status.EXPIRED
-                    active_hold.save(update_fields=["status", "updated_at"])
+
+            # 2. Validar sillas reservadas (en ventas pendientes, tanto silla principal como SaleItem)
+            primary_hold_ids = set(Sale.objects.filter(
+                trip=trip,
+                source=Sale.Source.ONLINE,
+                status=Sale.Status.PENDING,
+                seat_id__in=seats_by_id.keys(),
+            ).values_list("pk", flat=True))
+            item_hold_ids = set(SaleItem.objects.filter(
+                sale__trip=trip,
+                sale__source=Sale.Source.ONLINE,
+                sale__status=Sale.Status.PENDING,
+                seat_id__in=seats_by_id.keys(),
+            ).values_list("sale_id", flat=True))
+            holds = Sale.objects.select_for_update().filter(
+                pk__in=primary_hold_ids | item_hold_ids,
+            ).prefetch_related("items")
+
+            reserved_seats = set()
+            for hold in {
+                hold.pk: hold for hold in holds
+            }.values():
+                held_ids = {hold.seat_id}
+                held_ids.update(item.seat_id for item in hold.items.all())
+                held_ids.intersection_update(seats_by_id.keys())
+                if hold.expires_at and hold.expires_at > now:
+                    reserved_seats.update(held_ids)
+                else:
+                    hold.status = Sale.Status.EXPIRED
+                    hold.save(update_fields=["status", "updated_at"])
+
+            for passenger in normalized_passengers:
+                seat = seats_by_id[passenger["seat"]]
+                if seat.pk in reserved_seats:
+                    return Response(
+                        {
+                            "detail": (
+                                f"La silla {seat.seat_number} está reservada."
+                            )
+                        },
+                        status=status.HTTP_409_CONFLICT,
+                    )
 
             first = normalized_passengers[0]
             sale = Sale.objects.create(
