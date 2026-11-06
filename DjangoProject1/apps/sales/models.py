@@ -211,3 +211,35 @@ class Ticket(models.Model):
                 name="unique_issued_ticket_trip_seat",
             ),
         ]
+
+
+class TicketCheckIn(models.Model):
+    ticket = models.OneToOneField(
+        Ticket,
+        on_delete=models.PROTECT,
+        related_name="check_in",
+    )
+    trip = models.ForeignKey(Trip, on_delete=models.PROTECT)
+    checked_in_at = models.DateTimeField(auto_now_add=True)
+    checked_in_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="ticket_check_ins",
+    )
+
+
+class TicketCheckInIdempotency(models.Model):
+    key = models.CharField(max_length=120, unique=True)
+    request_hash = models.CharField(max_length=64)
+    checked_in_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+    )
+    check_in = models.OneToOneField(
+        TicketCheckIn,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="idempotency_record",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)

@@ -927,6 +927,93 @@ devuelve su estado: `issued`, `used` o `cancelled`.
 `valid` solo es `true` para tiquetes `issued`. Un tiquete `used` o
 `cancelled` continúa identificándose, pero no es válido para abordar.
 
+### Registrar abordaje
+
+El endpoint público de verificación QR es únicamente de consulta. No cambia
+el estado del tiquete. El registro de abordaje requiere autenticación y, por
+ahora, solo está permitido a usuarios con rol `admin`.
+
+```http
+POST /api/sales/tickets/check-in/
+Authorization: Bearer ACCESS_TOKEN_OPERADOR
+Content-Type: application/json
+Idempotency-Key: identificador-unico-del-intento
+```
+
+Solicitud:
+
+```json
+{
+  "verification_token": "TOKEN_OBTENIDO_DEL_QR",
+  "trip": 15
+}
+```
+
+`verification_token` es el token firmado de la boleta, no el JWT. `trip` es
+obligatorio y debe ser el viaje que el operador está controlando. Angular no
+debe enviar el ID del operador, la hora ni el estado deseado.
+
+La regla actual del backend permite abordar únicamente cuando el viaje está
+en estado `scheduled` o `in_progress`. Los estados `completed` y `cancelled`
+no admiten abordajes. Actualmente no existe una ventana horaria adicional:
+la decisión se toma con el estado almacenado del viaje, no con la hora del
+navegador. Si se agrega una ventana en el futuro, será una regla del backend.
+
+El backend valida que el token sea de una boleta, que pertenezca al viaje
+enviado, que la boleta esté `issued` y que la venta esté `paid`. La operación
+es atómica: cambia `issued` a `used` y crea el registro de auditoría en la
+misma transacción. La base de datos garantiza como máximo un abordaje por
+tiquete.
+
+Respuesta `201 Created`:
+
+```json
+{
+  "detail": "Abordaje registrado.",
+  "ticket_id": 30,
+  "ticket_code": "codigo-del-tiquete",
+  "status": "used",
+  "trip": 15,
+  "seat": {
+    "id": 5,
+    "seat_number": "01"
+  },
+  "check_in": {
+    "id": 8,
+    "checked_in_at": "2026-11-05T17:30:00-05:00",
+    "checked_in_by": {
+      "id": 2,
+      "name": "Operador"
+    }
+  }
+}
+```
+
+La misma `Idempotency-Key`, usada por el mismo administrador con el mismo
+contenido, devuelve el resultado original con `200 OK` y `replayed: true`.
+Las claves se conservan indefinidamente para mantener la recuperación segura
+de reintentos; debe planificarse una política de limpieza antes de cambiar
+esta retención. Una clave con otros datos o usada por otro operador devuelve
+`409` con `idempotency_conflict`.
+
+Errores:
+
+- `400 invalid_request`: faltan datos o tienen formato incorrecto.
+- `401`: sesión ausente o vencida.
+- `403 permission_denied`: el usuario no tiene rol `admin`.
+- `404 invalid_ticket`: token inválido, vencido o inexistente.
+- `409 wrong_trip`: la boleta pertenece a otro viaje.
+- `409 already_used`: el abordaje ya fue registrado.
+- `409 ticket_cancelled`: la boleta está cancelada.
+- `409 sale_not_paid`: la venta no está pagada.
+- `409 trip_not_boardable`: el viaje está cancelado o finalizado.
+- `409 idempotency_conflict`: la clave se reutilizó con otros datos.
+
+Después del abordaje, `GET /api/sales/tickets/verify/` continúa siendo
+público y devuelve `valid: false` y `status: "used"`. No expone los datos
+del operador. El detalle autenticado del tiquete incluye `check_in` con la
+hora y el operador.
+
 ### Venta administrativa
 
 Solo administradores:

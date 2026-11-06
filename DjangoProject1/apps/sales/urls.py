@@ -6,6 +6,7 @@ from .views import (
     FactusInvoiceRetryView,
     SaleInvoiceView,
     SaleConfirmationResendView,
+    TicketCheckInView,
     TicketVerificationView,
     SaleViewSet,
     TicketViewSet,
@@ -23,6 +24,11 @@ urlpatterns = [
         "tickets/verify/",
         TicketVerificationView.as_view(),
         name="ticket-verify",
+    ),
+    path(
+        "tickets/check-in/",
+        TicketCheckInView.as_view(),
+        name="ticket-check-in",
     ),
     path("admin-sales/", AdminSaleView.as_view(), name="admin-sale"),
     path(

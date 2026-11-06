@@ -17,6 +17,7 @@ from DjangoProject1.apps.sales.models import (
     Sale,
     SaleItem,
     Ticket,
+    TicketCheckIn,
 )
 from DjangoProject1.apps.sales.services import mark_sale_paid
 from DjangoProject1.apps.sales.ticket_verification import ticket_verification_token
@@ -92,6 +93,39 @@ class MultiTicketCheckoutTests(APITestCase):
         )
         TripFare.objects.create(trip=self.trip, amount_cents=2500000)
         self.client.force_authenticate(self.user)
+
+    def _create_admin(self, username="boarding-admin"):
+        user_model = get_user_model()
+        return user_model.objects.create_user(
+            username=username,
+            email=f"{username}@example.com",
+            identification_number=f"{len(username)}000000",
+            role=user_model.Role.ADMIN,
+        )
+
+    def _create_paid_ticket(self, seat=None):
+        seat = seat or self.seats[0]
+        sale = Sale.objects.create(
+            buyer=self.user,
+            created_by=self.user,
+            source=Sale.Source.ADMIN,
+            payment_method=Sale.PaymentMethod.CASH,
+            status=Sale.Status.PAID,
+            amount_cents=2500000,
+            trip=self.trip,
+            seat=seat,
+            passenger_identification="200000001",
+            passenger_name="Ana",
+            passenger_email="ana@example.com",
+        )
+        return Ticket.objects.create(
+            sale=sale,
+            trip=self.trip,
+            seat=seat,
+            passenger_identification="200000001",
+            passenger_name="Ana",
+            passenger_email="ana@example.com",
+        )
 
     @patch(
         "DjangoProject1.apps.sales.views.wompi_integrity_signature",
@@ -354,6 +388,159 @@ class MultiTicketCheckoutTests(APITestCase):
         )
 
         self.assertEqual(response.status_code, 403)
+
+    def test_check_in_marks_paid_ticket_used_and_audits_operator(self):
+        ticket = self._create_paid_ticket()
+        admin = self._create_admin()
+        self.client.force_authenticate(admin)
+
+        response = self.client.post(
+            reverse("ticket-check-in"),
+            {
+                "verification_token": ticket_verification_token(ticket),
+                "trip": self.trip.id,
+            },
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="check-in-1",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["status"], Ticket.Status.USED)
+        self.assertEqual(response.data["check_in"]["checked_in_by"]["id"], admin.id)
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.status, Ticket.Status.USED)
+        self.assertEqual(TicketCheckIn.objects.count(), 1)
+
+    def test_check_in_replay_returns_original_result(self):
+        ticket = self._create_paid_ticket()
+        admin = self._create_admin("boarding-replay")
+        self.client.force_authenticate(admin)
+        payload = {
+            "verification_token": ticket_verification_token(ticket),
+            "trip": self.trip.id,
+        }
+
+        first = self.client.post(
+            reverse("ticket-check-in"),
+            payload,
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="check-in-2",
+        )
+        second = self.client.post(
+            reverse("ticket-check-in"),
+            payload,
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="check-in-2",
+        )
+
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 200)
+        self.assertTrue(second.data["replayed"])
+        self.assertEqual(second.data["check_in"]["id"], first.data["check_in"]["id"])
+        self.assertEqual(TicketCheckIn.objects.count(), 1)
+
+    def test_check_in_rejects_idempotency_key_with_other_content(self):
+        ticket = self._create_paid_ticket()
+        admin = self._create_admin("boarding-conflict")
+        self.client.force_authenticate(admin)
+        path = reverse("ticket-check-in")
+        first = self.client.post(
+            path,
+            {
+                "verification_token": ticket_verification_token(ticket),
+                "trip": self.trip.id,
+            },
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="check-in-Conflict",
+        )
+        second = self.client.post(
+            path,
+            {
+                "verification_token": ticket_verification_token(ticket),
+                "trip": self.trip.id + 1,
+            },
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="check-in-Conflict",
+        )
+
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 409)
+        self.assertEqual(second.data["code"], "idempotency_conflict")
+
+    @patch("DjangoProject1.apps.sales.views.TicketCheckIn.objects.create")
+    def test_check_in_rolls_back_ticket_when_audit_fails(self, create_check_in):
+        create_check_in.side_effect = RuntimeError("audit failure")
+        ticket = self._create_paid_ticket()
+        admin = self._create_admin("boarding-rollback")
+        self.client.force_authenticate(admin)
+
+        with self.assertRaises(RuntimeError):
+            self.client.post(
+                reverse("ticket-check-in"),
+                {
+                    "verification_token": ticket_verification_token(ticket),
+                    "trip": self.trip.id,
+                },
+                format="json",
+                HTTP_IDEMPOTENCY_KEY="check-in-rollback",
+            )
+
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.status, Ticket.Status.ISSUED)
+        self.assertEqual(TicketCheckIn.objects.count(), 0)
+
+    def test_check_in_rejects_used_ticket_and_does_not_require_same_key(self):
+        ticket = self._create_paid_ticket()
+        admin = self._create_admin("boarding-used")
+        self.client.force_authenticate(admin)
+        ticket.status = Ticket.Status.USED
+        ticket.save(update_fields=["status"])
+        TicketCheckIn.objects.create(
+            ticket=ticket,
+            trip=self.trip,
+            checked_in_by=admin,
+        )
+
+        response = self.client.post(
+            reverse("ticket-check-in"),
+            {
+                "verification_token": ticket_verification_token(ticket),
+                "trip": self.trip.id,
+            },
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="check-in-3",
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.data["code"], "already_used")
+        self.assertEqual(TicketCheckIn.objects.count(), 1)
+
+    def test_check_in_rejects_wrong_trip_and_client(self):
+        ticket = self._create_paid_ticket()
+        response = self.client.post(
+            reverse("ticket-check-in"),
+            {
+                "verification_token": ticket_verification_token(ticket),
+                "trip": self.trip.id + 1,
+            },
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="check-in-4",
+        )
+        self.assertEqual(response.status_code, 403)
+
+        admin = self._create_admin("boarding-wrong-trip")
+        self.client.force_authenticate(admin)
+        response = self.client.post(
+            reverse("ticket-check-in"),
+            {
+                "verification_token": ticket_verification_token(ticket),
+                "trip": self.trip.id + 1,
+            },
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="check-in-5",
+        )
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.data["code"], "wrong_trip")
 
     @patch("DjangoProject1.apps.sales.services.issue_factus_invoice")
     def test_approved_payment_issues_each_ticket_only_once(self, _invoice):

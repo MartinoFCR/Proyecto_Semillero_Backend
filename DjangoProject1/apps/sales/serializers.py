@@ -1,6 +1,13 @@
 from rest_framework import serializers
 
-from .models import FactusInvoice, Payment, Sale, SaleItem, Ticket
+from .models import (
+    FactusInvoice,
+    Payment,
+    Sale,
+    SaleItem,
+    Ticket,
+    TicketCheckIn,
+)
 from .ticket_verification import ticket_verification_token, ticket_verification_url
 
 
@@ -8,6 +15,7 @@ class TicketSerializer(serializers.ModelSerializer):
     verification_token = serializers.SerializerMethodField()
     verification_url = serializers.SerializerMethodField()
     seat_number = serializers.CharField(source="seat.seat_number", read_only=True)
+    check_in = serializers.SerializerMethodField()
 
     class Meta:
         model = Ticket
@@ -28,6 +36,23 @@ class TicketSerializer(serializers.ModelSerializer):
         if request is None:
             return None
         return ticket_verification_url(ticket, request)
+
+    def get_check_in(self, ticket):
+        try:
+            check_in = ticket.check_in
+        except TicketCheckIn.DoesNotExist:
+            check_in = None
+        if check_in is None:
+            return None
+        return {
+            "id": check_in.id,
+            "checked_in_at": check_in.checked_in_at,
+            "checked_in_by": {
+                "id": check_in.checked_in_by_id,
+                "name": check_in.checked_in_by.get_full_name()
+                or check_in.checked_in_by.username,
+            },
+        }
 
 
 class SaleItemSerializer(serializers.ModelSerializer):

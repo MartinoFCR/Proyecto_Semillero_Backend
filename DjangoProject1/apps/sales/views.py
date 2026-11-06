@@ -22,6 +22,8 @@ from .models import (
     Sale,
     SaleItem,
     Ticket,
+    TicketCheckIn,
+    TicketCheckInIdempotency,
 )
 from .permissions import IsAdminOrSaleOwner
 from .serializers import (
@@ -118,6 +120,194 @@ class TicketVerificationView(APIView):
         response["Cache-Control"] = "no-store"
         response["Pragma"] = "no-cache"
         return response
+
+
+class TicketCheckInView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        if request.user.role != User.Role.ADMIN:
+            return self._error(
+                "permission_denied",
+                "Solo un administrador puede registrar abordajes.",
+                status.HTTP_403_FORBIDDEN,
+            )
+
+        token = request.data.get("verification_token")
+        trip_id = request.data.get("trip")
+        if not isinstance(token, str) or not token.strip() or trip_id is None:
+            return self._error(
+                "invalid_request",
+                "verification_token y trip son obligatorios.",
+                status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            trip_id = int(trip_id)
+        except (TypeError, ValueError):
+            return self._error(
+                "invalid_request",
+                "El identificador del viaje no es válido.",
+                status.HTTP_400_BAD_REQUEST,
+            )
+
+        idempotency_key = request.headers.get("Idempotency-Key", "").strip()
+        if not idempotency_key:
+            return self._error(
+                "invalid_request",
+                "El encabezado Idempotency-Key es obligatorio.",
+                status.HTTP_400_BAD_REQUEST,
+            )
+        request_hash = hashlib.sha256(
+            json.dumps(
+                {
+                    "verification_token": token.strip(),
+                    "trip": trip_id,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
+
+        try:
+            ticket = get_ticket_from_verification_token(token.strip())
+        except (
+            signing.BadSignature,
+            signing.SignatureExpired,
+            Ticket.DoesNotExist,
+        ):
+            return self._error(
+                "invalid_ticket",
+                "El token no corresponde a una boleta válida.",
+                status.HTTP_404_NOT_FOUND,
+            )
+
+        with transaction.atomic():
+            idempotency, created = (
+                TicketCheckInIdempotency.objects.select_for_update().get_or_create(
+                    key=idempotency_key,
+                    defaults={
+                        "request_hash": request_hash,
+                        "checked_in_by": request.user,
+                    },
+                )
+            )
+            if not created:
+                if (
+                    idempotency.request_hash != request_hash
+                    or idempotency.checked_in_by_id != request.user.id
+                ):
+                    return self._error(
+                        "idempotency_conflict",
+                        "La clave ya se utilizó con otros datos.",
+                        status.HTTP_409_CONFLICT,
+                    )
+                return Response(
+                    {
+                        **self._check_in_data(idempotency.check_in),
+                        "replayed": True,
+                    },
+                    status=status.HTTP_200_OK,
+                )
+
+            ticket = Ticket.objects.select_for_update().select_related(
+                "sale",
+                "trip",
+                "seat",
+            ).get(pk=ticket.pk)
+            if ticket.trip_id != trip_id:
+                return self._error(
+                    "wrong_trip",
+                    "La boleta pertenece a otro viaje.",
+                    status.HTTP_409_CONFLICT,
+                )
+            if ticket.status == Ticket.Status.USED:
+                return self._error(
+                    "already_used",
+                    "Esta boleta ya tiene un abordaje registrado.",
+                    status.HTTP_409_CONFLICT,
+                    ticket=ticket,
+                )
+            if ticket.status == Ticket.Status.CANCELLED:
+                return self._error(
+                    "ticket_cancelled",
+                    "La boleta está cancelada.",
+                    status.HTTP_409_CONFLICT,
+                    ticket=ticket,
+                )
+            if ticket.sale.status != Sale.Status.PAID:
+                return self._error(
+                    "sale_not_paid",
+                    "La venta de la boleta no está pagada.",
+                    status.HTTP_409_CONFLICT,
+                    ticket=ticket,
+                )
+            if ticket.trip.trip_state not in {
+                Trip.TripState.SCHEDULED,
+                Trip.TripState.IN_PROGRESS,
+            }:
+                return self._error(
+                    "trip_not_boardable",
+                    "El viaje no admite abordajes en su estado actual.",
+                    status.HTTP_409_CONFLICT,
+                    ticket=ticket,
+                )
+
+            ticket.status = Ticket.Status.USED
+            ticket.save(update_fields=["status"])
+            check_in = TicketCheckIn.objects.create(
+                ticket=ticket,
+                trip=ticket.trip,
+                checked_in_by=request.user,
+            )
+            idempotency.check_in = check_in
+            idempotency.save(update_fields=["check_in"])
+
+        return Response(
+            self._check_in_data(check_in),
+            status=status.HTTP_201_CREATED,
+        )
+
+    @staticmethod
+    def _check_in_data(check_in):
+        ticket = check_in.ticket
+        return {
+            "detail": "Abordaje registrado.",
+            "ticket_id": ticket.id,
+            "ticket_code": str(ticket.ticket_code),
+            "status": ticket.status,
+            "trip": check_in.trip_id,
+            "seat": {
+                "id": ticket.seat_id,
+                "seat_number": ticket.seat.seat_number,
+            },
+            "check_in": {
+                "id": check_in.id,
+                "checked_in_at": check_in.checked_in_at,
+                "checked_in_by": {
+                    "id": check_in.checked_in_by_id,
+                    "name": check_in.checked_in_by.get_full_name()
+                    or check_in.checked_in_by.username,
+                },
+            },
+        }
+
+    @classmethod
+    def _error(cls, code, detail, response_status, ticket=None):
+        data = {"code": code, "detail": detail}
+        if ticket is not None:
+            data.update({
+                "ticket_id": ticket.id,
+                "status": ticket.status,
+            })
+            try:
+                check_in = ticket.check_in
+            except TicketCheckIn.DoesNotExist:
+                check_in = None
+            if check_in:
+                data["check_in"] = {
+                    "checked_in_at": check_in.checked_in_at,
+                }
+        return Response(data, status=response_status)
 
 
 class AdminSaleView(APIView):
