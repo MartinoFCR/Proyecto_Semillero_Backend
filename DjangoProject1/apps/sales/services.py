@@ -379,6 +379,92 @@ def factus_token_diagnostics():
         }
 
 
+def factus_invoice_diagnostics():
+    config = _factus_configuration()
+    token = _factus_token(config)
+    payload = {
+        "reference_code": "FACT-2026-0124",
+        "document": "01",
+        "numbering_range_id": 389,
+        "operation_type": "10",
+        "observation": "Observación de prueba",
+        "payment_details": [
+            {
+                "payment_form": "1",
+                "payment_method_code": "42",
+                "reference_code": "pago-001",
+                "amount": "83300",
+            }
+        ],
+        "cash_rounding_amount": "0.00",
+        "customer": {
+            "identification_document_code": "31",
+            "identification": "123456789",
+            "company": "Alan company name",
+            "trade_name": "Alan trade name",
+            "address": "calle 1 # 1-1",
+            "email": "alan.company@email.com",
+            "phone": "1234567890",
+            "legal_organization_code": "1",
+            "tribute_code": "ZZ",
+            "country_code": "CO",
+            "responsibilities": ["R-99-PN"],
+            "municipality_code": "68679",
+        },
+        "items": [
+            {
+                "code_reference": "PROD-000A",
+                "name": "Producto A",
+                "quantity": "1.00",
+                "discount_rate": "0.00",
+                "price": "10000.00",
+                "unit_measure_code": "94",
+                "standard_code": "999",
+                "taxes": [{"code": "01", "rate": "19.00"}],
+            },
+            {
+                "code_reference": "PROD-000B",
+                "name": "Producto B",
+                "quantity": "3.00",
+                "discount_rate": "0.00",
+                "price": "20000.00",
+                "unit_measure_code": "94",
+                "standard_code": "999",
+                "taxes": [{"code": "01", "rate": "19.00"}],
+            },
+        ],
+    }
+    request = Request(
+        f"{config['FACTUS_BASE_URL'].rstrip('/')}/v2/bills/validate",
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=20) as response:
+            body = response.read().decode("utf-8")
+            return {
+                "ok": True,
+                "http_status": response.status,
+                "response": json.loads(body),
+            }
+    except HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        try:
+            response = json.loads(body)
+        except json.JSONDecodeError:
+            response = {"raw_body": body}
+        return {
+            "ok": False,
+            "http_status": exc.code,
+            "response": response,
+        }
+
+
 def _factus_invoice_payload(sale, config):
     price = sale.amount_cents / 100
     payment_methods = {
