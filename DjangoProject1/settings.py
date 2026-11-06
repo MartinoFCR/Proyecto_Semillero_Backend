@@ -5,7 +5,10 @@ from dotenv import load_dotenv
 from django.core.exceptions import ImproperlyConfigured
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-load_dotenv(BASE_DIR / ".env")
+for env_file in (BASE_DIR / ".env", BASE_DIR.parent / ".env"):
+    if env_file.is_file():
+        load_dotenv(env_file)
+        break
 
 if os.getenv("GDAL_LIBRARY_PATH"):
     os.environ["GDAL_LIBRARY_PATH"] = os.getenv("GDAL_LIBRARY_PATH")

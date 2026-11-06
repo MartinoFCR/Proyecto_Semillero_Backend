@@ -136,6 +136,95 @@ services:
       - ./backend/media:/app/media
 ```
 
+### Fuente única de variables en producción
+
+En el servidor, el archivo de variables debe estar en:
+
+```text
+/home/devadhan/semillero/.env
+```
+
+Compose debe ejecutarse desde `/home/devadhan/semillero`, porque allí resuelve
+las expresiones `${VARIABLE}` del `docker-compose.yml`. El servicio `backend`
+debe recibir todas las variables que consume Django, incluyendo
+`FACTUS_TAX_CODE`, `FACTUS_TAX_RATE` y `FACTUS_TAX_EXCLUDED`, además de las
+variables Factus ya listadas en el archivo Compose.
+
+No se deben mantener copias distintas del `.env` dentro de `backend/` o
+`frontend/`. El `.env` raíz debe tener permisos restrictivos:
+
+```bash
+chmod 600 /home/devadhan/semillero/.env
+```
+
+Comprueba la inyección sin imprimir valores sensibles:
+
+```bash
+cd /home/devadhan/semillero
+docker compose config >/dev/null
+docker exec semillero-backend python3 manage.py check_runtime_environment
+docker exec semillero-backend python3 manage.py check_factus_token
+```
+
+### No mezclar systemd con Docker Compose
+
+El despliegue oficial usa Docker Compose. Si existen servicios antiguos como
+`semillero-backend.service` o `semillero-bic.service`, no deben arrancar otro
+Gunicorn ni reiniciar procesos en paralelo. Después de verificar que los
+contenedores están sanos, detenerlos y deshabilitarlos:
+
+```bash
+sudo systemctl disable --now semillero-backend.service
+sudo systemctl disable --now semillero-bic.service
+sudo systemctl reset-failed semillero-backend.service semillero-bic.service
+```
+
+Si alguno de esos servicios debe conservarse por una decisión operativa,
+no ejecutes estos comandos: primero corrige su `WorkingDirectory`,
+`ExecStart` y `EnvironmentFile` para apuntar a `/home/devadhan/semillero` y
+al entorno virtual real. No deben coexistir dos procesos administrando el
+mismo backend.
+
+Si un servicio debe permanecer administrado por systemd, limita sus
+reinicios para evitar un bucle que consuma recursos mientras se corrige la
+causa raíz. Ejecuta `sudo systemctl edit` para cada servicio afectado y usa:
+
+```ini
+[Unit]
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Restart=on-failure
+RestartSec=30
+```
+
+Por ejemplo:
+
+```bash
+sudo systemctl edit semillero-backend.service
+sudo systemctl edit semillero-bic.service
+sudo systemctl daemon-reload
+sudo systemctl reset-failed semillero-backend.service semillero-bic.service
+```
+
+Esta configuración permite como máximo cinco reinicios en cinco minutos y
+espera treinta segundos entre intentos. No reemplaza la corrección de
+`ExecStart`, `WorkingDirectory` o `EnvironmentFile`; si la ruta de Gunicorn
+no existe, el servicio debe corregirse o deshabilitarse para que Compose sea
+el único runtime.
+
+Para publicar cambios usando únicamente Compose:
+
+```bash
+cd /home/devadhan/semillero
+docker compose up -d --build --force-recreate backend
+docker exec semillero-backend python3 manage.py migrate
+docker exec semillero-backend python3 manage.py createcachetable django_cache
+docker compose ps
+docker compose logs --tail=100 backend
+```
+
 La `SECRET_KEY` no debe conservar el valor de ejemplo
 `cambia_esta_clave`. En producción se debe usar una clave aleatoria y
 mantener el archivo con permisos restrictivos, por ejemplo:
