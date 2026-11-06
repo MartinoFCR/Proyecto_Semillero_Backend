@@ -302,6 +302,83 @@ def _factus_token(config):
     return token
 
 
+def factus_token_diagnostics():
+    config = _factus_configuration()
+    required = (
+        "FACTUS_BASE_URL",
+        "FACTUS_USERNAME",
+        "FACTUS_PASSWORD",
+        "FACTUS_CLIENT_ID",
+        "FACTUS_CLIENT_SECRET",
+    )
+    missing = [name for name in required if not config[name]]
+    if missing:
+        return {
+            "ok": False,
+            "missing": missing,
+            "response_fields": [],
+        }
+
+    boundary = "----FactusDiagnosticBoundary"
+    fields = {
+        "grant_type": "password",
+        "username": config["FACTUS_USERNAME"],
+        "password": config["FACTUS_PASSWORD"],
+        "client_id": config["FACTUS_CLIENT_ID"],
+        "client_secret": config["FACTUS_CLIENT_SECRET"],
+    }
+    parts = []
+    for name, value in fields.items():
+        parts.extend(
+            [
+                f"--{boundary}\r\n".encode(),
+                (
+                    f'Content-Disposition: form-data; name="{name}"\r\n\r\n'
+                ).encode(),
+                f"{value}\r\n".encode(),
+            ]
+        )
+    parts.append(f"--{boundary}--\r\n".encode())
+    request = Request(
+        f"{config['FACTUS_BASE_URL'].rstrip('/')}/oauth/token",
+        data=b"".join(parts),
+        headers={
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+            "Accept": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=15) as response:
+            response_data = json.loads(response.read().decode("utf-8"))
+            return {
+                "ok": bool(response_data.get("access_token")),
+                "http_status": response.status,
+                "response_fields": sorted(response_data.keys()),
+                "token_type": response_data.get("token_type"),
+                "expires_in": response_data.get("expires_in"),
+                "has_access_token": bool(response_data.get("access_token")),
+                "has_refresh_token": bool(response_data.get("refresh_token")),
+            }
+    except HTTPError as exc:
+        try:
+            body = json.loads(exc.read().decode("utf-8"))
+            error_fields = sorted(body.keys())
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            error_fields = []
+        return {
+            "ok": False,
+            "http_status": exc.code,
+            "response_fields": error_fields,
+        }
+    except (URLError, TimeoutError, json.JSONDecodeError) as exc:
+        return {
+            "ok": False,
+            "error_type": type(exc).__name__,
+            "response_fields": [],
+        }
+
+
 def _factus_invoice_payload(sale, config):
     price = sale.amount_cents / 100
     payment_methods = {
