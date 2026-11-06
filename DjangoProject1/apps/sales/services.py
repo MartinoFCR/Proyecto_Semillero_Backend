@@ -331,6 +331,7 @@ def _factus_invoice_payload(sale, config):
         "operation_type": "10",
         "send_email": False,
         "observation": f"Transporte - venta {sale.pk}",
+        "cash_rounding_amount": "0.00",
         "payment_details": [
             {
                 "payment_form": "1",
@@ -386,7 +387,7 @@ def _factus_invoice_payload(sale, config):
             config["FACTUS_MUNICIPALITY_CODE"]
         )
     if config["FACTUS_NUMBERING_RANGE_ID"]:
-        payload["numbering_range_id"] = config["FACTUS_NUMBERING_RANGE_ID"]
+        payload["numbering_range_id"] = int(config["FACTUS_NUMBERING_RANGE_ID"])
     return payload
 
 
