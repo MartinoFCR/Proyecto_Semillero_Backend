@@ -441,6 +441,7 @@ def factus_invoice_diagnostics():
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
             "Accept": "application/json",
+            "User-Agent": "SemilleroBackend/1.0",
         },
         method="POST",
     )
@@ -594,6 +595,7 @@ def issue_factus_invoice(sale_id):
                 "Authorization": f"Bearer {token}",
                 "Content-Type": "application/json",
                 "Accept": "application/json",
+                "User-Agent": "SemilleroBackend/1.0",
             },
             method="POST",
         )
