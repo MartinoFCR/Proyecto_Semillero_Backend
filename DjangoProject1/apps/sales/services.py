@@ -436,14 +436,29 @@ def issue_factus_invoice(sale_id):
         )
         with urlopen(request, timeout=20) as response:
             result = json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        detail = ""
+        try:
+            response_data = json.loads(exc.read().decode("utf-8"))
+            detail = response_data.get("message") or response_data.get("error")
+            if not detail and response_data.get("errors"):
+                detail = json.dumps(response_data["errors"], ensure_ascii=False)
+        except (UnicodeDecodeError, json.JSONDecodeError, AttributeError):
+            detail = ""
+        invoice.status = FactusInvoice.Status.ERROR
+        invoice.error_message = (
+            f"Factus rechazó la factura ({exc.code})."
+            + (f" Detalle: {detail}" if detail else "")
+        )[:2000]
+        invoice.save(update_fields=["status", "error_message", "updated_at"])
+        return invoice
     except (
-        HTTPError,
         URLError,
         TimeoutError,
         json.JSONDecodeError,
         ValidationError,
         ValueError,
-    ) as exc:
+    ):
         invoice.status = FactusInvoice.Status.ERROR
         invoice.error_message = "Factus no pudo validar la factura."
         invoice.save(update_fields=["status", "error_message", "updated_at"])
