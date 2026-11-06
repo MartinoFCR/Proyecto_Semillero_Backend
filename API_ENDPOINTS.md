@@ -255,11 +255,24 @@ Cada viaje incluye `id`, `route`, `date_time_start`, `date_time_end`,
 
 ```http
 GET /api/trips/trips/{trip_id}/seats/
+GET /api/trips/trips/{trip_id}/available-seats/
 ```
 
-No requiere token. Devuelve `server_time` y el estado de cada silla:
-`available`, `reserved` o `sold`. Esta consulta no garantiza la reserva; el
-checkout vuelve a validarla bajo concurrencia.
+No requiere autenticación. Devuelve `trip`, `server_time` y la lista completa de sillas correspondientes a la capacidad registrada del autobús (`bus.capacity`), sin paginación ni truncamiento.
+
+Los asientos se ordenan de forma natural por fila (`row`), columna (`col`) y número de silla (`seat_number`), siguiendo la distribución estándar de 4 columnas (2 + pasillo + 2, donde columnas 1 y 2 van a la izquierda del pasillo y 3 y 4 a la derecha).
+
+Cada objeto de silla incluye:
+- `id`: identificador numérico de la silla.
+- `seat_number`: número visible de la silla (ej. `"1"` a la capacidad del bus).
+- `row`: número de fila (ej. `"1"`, `"2"`...).
+- `col`: número de columna (`"1"`, `"2"`, `"3"`, `"4"`).
+- `status`: estado actual de la silla:
+  - `available`: disponible para selección y compra.
+  - `reserved`: bloqueada por una reserva online en curso (dentro del tiempo límite de 10 minutos). Incluye tanto sillas principales como adicionales de compras multi-tiquete.
+  - `sold`: tiquete ya emitido y pagado para este viaje.
+
+Esta consulta no garantiza la reserva; el checkout y la venta administrativa vuelven a validarla bajo bloqueo transaccional.
 
 ## 1.2. Portal del cliente
 
@@ -597,6 +610,7 @@ El `user` debe referenciar un usuario cuyo rol sea `driver`.
 
 ```text
 GET    /api/fleet/seats/
+GET    /api/fleet/seats/?bus={bus_id}
 POST   /api/fleet/seats/
 GET    /api/fleet/seats/{id}/
 PUT    /api/fleet/seats/{id}/
@@ -604,7 +618,8 @@ PATCH  /api/fleet/seats/{id}/
 DELETE /api/fleet/seats/{id}/
 ```
 
-Crear una silla:
+- `GET /api/fleet/seats/?bus={bus_id}`: devuelve todos los registros de sillas del bus indicado sin paginación artificial. Si los registros de sillas en base de datos son inferiores a `bus.capacity`, el backend completa automáticamente las sillas faltantes siguiendo la distribución 2 + pasillo + 2, conservando los IDs y posiciones ya existentes.
+- Crear una silla manualmente (`POST`):
 
 ```json
 {
@@ -1154,32 +1169,33 @@ El comprador es el usuario autenticado; no se crean cuentas para los
 pasajeros. Se permiten máximo 10 boletas por compra. La clave de idempotencia
 es obligatoria y repetirla devuelve la misma venta sin crear otra.
 
-El backend valida la silla, obtiene el precio de `TripFare`, crea una venta
-`pending`, reserva todas las sillas durante 5 minutos y devuelve datos para el Widget
-de Wompi:
+El backend valida las sillas (completando los registros del bus si faltaban respecto a su capacidad), obtiene el precio de `TripFare`, crea una venta `pending`, reserva todas las sillas durante **10 minutos** y devuelve los datos para el Widget de Wompi:
 
 ```json
 {
   "sale_id": 20,
-  "reference": "SALE-20-...",
+  "reference": "sale-20",
   "public_key": "pub_test_...",
   "currency": "COP",
   "amount_in_cents": 5000000,
   "signature_integrity": "...",
-  "expires_at": "2026-11-04T15:05:00Z",
-  "server_time": "2026-11-04T15:00:00Z",
+  "expiration_time": "2026-11-06T22:45:00.000Z",
+  "signature_integrity_with_expiration": "...",
+  "redirect_url": "https://frontend.example.com/resultado",
+  "expires_at": "2026-11-06T17:45:00-05:00",
+  "server_time": "2026-11-06T17:35:00-05:00",
   "quantity": 2
 }
 ```
 
-El frontend debe usar esos valores con el Widget. Nunca debe enviar un precio
-propio ni enviar datos de tarjeta al backend. Si una sola silla no está
-disponible, la operación completa responde `409 Conflict` y no crea reservas
-parciales.
+#### Integración en el Widget de Wompi:
+- **`signature_integrity_with_expiration`**: debe enviarse en `signature.integrity` (o `data-signature:integrity`). Incluye la fecha de expiración en el hash SHA-256 (`<reference><amount><currency><expiration_time><secret>`).
+- **`expiration_time`**: debe enviarse tal como llega en formato UTC ISO 8601 (`expirationTime` o `data-expiration-time`). Activa el contador nativo de Wompi y hace que la pasarela rechace pagos fuera de tiempo.
+- **`signature_integrity`**: se mantiene disponible por retrocompatibilidad con integraciones anteriores.
 
-Al aprobarse el pago se emite un tiquete por silla. Los reintentos del webhook
-o de consulta de estado son idempotentes. Una factura Factus representa toda
-la compra y contiene un concepto por boleta.
+Si una sola silla no está disponible o ya está reservada por otro cliente (incluso como asiento secundario en otra orden), la operación responde `409 Conflict` y no crea reservas parciales.
+
+Al aprobarse el pago se emite un tiquete por silla. Los reintentos del webhook o de consulta de estado son idempotentes. Una factura Factus representa toda la compra y contiene un concepto por boleta.
 
 ### Confirmar el estado de una transacción
 
@@ -1196,9 +1212,10 @@ Solicitud:
 }
 ```
 
-El backend consulta Wompi con la clave privada y verifica referencia, monto,
-moneda y estado. Solo `APPROVED` marca la venta como pagada y genera el
-tiquete. `DECLINED` y `ERROR` marcan la venta como fallida.
+El backend consulta Wompi con la clave privada y verifica referencia, monto, moneda y estado:
+- `APPROVED`: si las sillas siguen disponibles, marca la venta como `paid` y genera los tiquetes. Si la reserva ya había expirado y las sillas fueron ocupadas por otra compra, marca la venta como `refund_required` y notifica por correo a los administradores para gestionar la reubicación o devolución del dinero desde Wompi.
+- `DECLINED`, `ERROR`, `VOIDED`: marcan la venta como `failed` (o `expired` si ya venció el tiempo).
+- Estados posibles de la venta (`sale_status`): `pending`, `paid`, `failed`, `cancelled`, `expired`, `refund_required`.
 
 ### Webhook de Wompi
 
