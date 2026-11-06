@@ -1,8 +1,13 @@
 import hashlib
 import hmac
 import json
+import logging
 import os
+from datetime import timezone as dt_timezone
+
 from django.conf import settings
+from django.contrib.auth import get_user_model
+from django.db.models import Q
 from django.core.mail import EmailMultiAlternatives
 from smtplib import SMTPException
 from urllib.error import HTTPError, URLError
@@ -12,7 +17,12 @@ from django.db import transaction
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
+from DjangoProject1.apps.fleet.models import Seat
+
 from .models import FactusInvoice, Payment, Sale, SaleItem, Ticket
+
+logger = logging.getLogger(__name__)
+User = get_user_model()
 
 
 def create_ticket_for_sale(sale, trip, seat, passenger):
@@ -44,19 +54,106 @@ def create_ticket_for_sale(sale, trip, seat, passenger):
     )
 
 
+def _sale_items(sale):
+    items = list(sale.items.select_related("trip", "seat"))
+    if items:
+        return items
+    return [
+        SaleItem(
+            sale=sale,
+            trip=sale.trip,
+            seat=sale.seat,
+            passenger_identification=sale.passenger_identification,
+            passenger_identification_document_code=(
+                sale.passenger_identification_document_code
+            ),
+            passenger_name=sale.passenger_name,
+            passenger_email=sale.passenger_email,
+            passenger_telephone=sale.passenger_telephone,
+        )
+    ]
+
+
+def _seats_taken_by_others(sale, items):
+    """Devuelve los IDs de sillas vendidas o reservadas por otra venta.
+
+    Debe llamarse dentro de una transacción. Bloquea las sillas en el mismo
+    orden que el checkout para evitar condiciones de carrera.
+    """
+    seat_ids = sorted({item.seat_id for item in items})
+    list(Seat.objects.select_for_update().filter(pk__in=seat_ids).order_by("pk"))
+    taken = set(
+        Ticket.objects.filter(
+            trip_id=sale.trip_id,
+            seat_id__in=seat_ids,
+            status=Ticket.Status.ISSUED,
+        ).exclude(sale=sale).values_list("seat_id", flat=True)
+    )
+    active_holds = Sale.objects.filter(
+        trip_id=sale.trip_id,
+        source=Sale.Source.ONLINE,
+        status=Sale.Status.PENDING,
+        expires_at__gt=timezone.now(),
+    ).exclude(pk=sale.pk).filter(
+        Q(seat_id__in=seat_ids) | Q(items__seat_id__in=seat_ids)
+    ).prefetch_related("items")
+    for hold in active_holds:
+        held = {hold.seat_id} | {item.seat_id for item in hold.items.all()}
+        taken.update(held.intersection(seat_ids))
+    return taken
+
+
+def notify_refund_required(sale_id):
+    """Avisa a los administradores que un pago aprobado no tiene silla."""
+    sale = Sale.objects.select_related("buyer", "payment").get(pk=sale_id)
+    recipients = list(
+        User.objects.filter(role=User.Role.ADMIN, is_active=True)
+        .exclude(email="")
+        .values_list("email", flat=True)
+    )
+    logger.error(
+        "Venta %s pagada en Wompi sin sillas disponibles: requiere reembolso.",
+        sale.pk,
+    )
+    if not recipients:
+        logger.warning("No hay administradores con correo para avisar.")
+        return False
+    reference = getattr(getattr(sale, "payment", None), "provider_reference", "")
+    body = (
+        f"La venta #{sale.pk} fue pagada en Wompi después de vencer la "
+        "reserva y una o más sillas ya estaban ocupadas, por lo que no se "
+        "emitieron tiquetes.\n\n"
+        f"Comprador: {sale.buyer.get_full_name() or sale.buyer.username} "
+        f"({sale.buyer.email})\n"
+        f"Valor: ${sale.amount_cents / 100:,.2f} COP\n"
+        f"Referencia Wompi: {reference}\n\n"
+        "Acción requerida: contactar al cliente para reubicarlo o realizar "
+        "el reembolso desde el panel de Wompi."
+    )
+    try:
+        EmailMultiAlternatives(
+            subject=f"[Acción requerida] Reembolso venta #{sale.pk}",
+            body=body,
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            to=recipients,
+        ).send(fail_silently=False)
+    except (SMTPException, OSError):
+        logger.exception("No se pudo enviar el aviso de reembolso.")
+        return False
+    return True
+
+
 def mark_sale_paid(sale, payment_status, provider_reference, raw_response):
     with transaction.atomic():
         sale = Sale.objects.select_for_update().get(pk=sale.pk)
-        if sale.status == Sale.Status.PAID:
+        if sale.status in {Sale.Status.PAID, Sale.Status.REFUND_REQUIRED}:
             return sale
-        if (
+        is_expired = sale.status == Sale.Status.EXPIRED or (
             sale.status == Sale.Status.PENDING
             and sale.expires_at
             and sale.expires_at <= timezone.now()
-        ):
-            sale.status = Sale.Status.EXPIRED
-            sale.save(update_fields=["status", "updated_at"])
-            return sale
+        )
+        # El pago siempre se registra, aunque la reserva haya vencido.
         payment, _ = Payment.objects.select_for_update().get_or_create(
             sale=sale,
             defaults={
@@ -72,25 +169,30 @@ def mark_sale_paid(sale, payment_status, provider_reference, raw_response):
         payment.save()
 
         if payment_status != "APPROVED":
-            sale.status = Sale.Status.FAILED
+            sale.status = (
+                Sale.Status.EXPIRED if is_expired else Sale.Status.FAILED
+            )
             sale.save(update_fields=["status", "updated_at"])
             return sale
 
+        items = _sale_items(sale)
+        if is_expired:
+            taken = _seats_taken_by_others(sale, items)
+            if taken:
+                sale.status = Sale.Status.REFUND_REQUIRED
+                sale.save(update_fields=["status", "updated_at"])
+                transaction.on_commit(
+                    lambda sale_id=sale.pk: notify_refund_required(sale_id)
+                )
+                return sale
+            logger.info(
+                "Venta %s pagada tras vencer la reserva; sillas libres, "
+                "se emiten tiquetes.",
+                sale.pk,
+            )
+
         sale.status = Sale.Status.PAID
         sale.save(update_fields=["status", "updated_at"])
-        items = list(sale.items.select_related("trip", "seat"))
-        if not items:
-            items = [
-                SaleItem(
-                    sale=sale,
-                    trip=sale.trip,
-                    seat=sale.seat,
-                    passenger_identification=sale.passenger_identification,
-                    passenger_name=sale.passenger_name,
-                    passenger_email=sale.passenger_email,
-                    passenger_telephone=sale.passenger_telephone,
-                )
-            ]
         for item in items:
             create_ticket_for_sale(
                 sale,
@@ -187,11 +289,22 @@ def get_wompi_transaction(transaction_id):
         ) from exc
 
 
-def wompi_integrity_signature(reference, amount_cents, currency="COP"):
+def wompi_expiration_time(value):
+    """Formatea una fecha como la espera Wompi: UTC ISO 8601 con milisegundos."""
+    value = value.astimezone(dt_timezone.utc)
+    return value.strftime("%Y-%m-%dT%H:%M:%S.") + f"{value.microsecond // 1000:03d}Z"
+
+
+def wompi_integrity_signature(
+    reference,
+    amount_cents,
+    currency="COP",
+    expiration_time="",
+):
     secret = os.getenv("WOMPI_INTEGRITY_SECRET")
     if not secret:
         raise ValidationError("WOMPI_INTEGRITY_SECRET no está configurado.")
-    payload = f"{reference}{amount_cents}{currency}{secret}"
+    payload = f"{reference}{amount_cents}{currency}{expiration_time}{secret}"
     return hashlib.sha256(payload.encode()).hexdigest()
 
 

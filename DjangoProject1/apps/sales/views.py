@@ -37,12 +37,16 @@ from .services import (
     issue_factus_invoice,
     mark_sale_paid,
     validate_wompi_event_signature,
+    wompi_expiration_time,
     wompi_integrity_signature,
     send_sale_confirmation_email,
 )
 from .ticket_verification import get_ticket_from_verification_token
 
 User = get_user_model()
+
+# Minutos que una silla queda reservada mientras el cliente paga en Wompi.
+SALE_HOLD_MINUTES = 10
 
 class SaleViewSet(ReadOnlyModelViewSet):
     serializer_class = SaleSerializer
@@ -894,7 +898,7 @@ class WompiCheckoutView(APIView):
                 passenger_name=first["name"],
                 passenger_email=first["email"],
                 passenger_telephone=first["telephone"],
-                expires_at=now + timedelta(minutes=5),
+                expires_at=now + timedelta(minutes=SALE_HOLD_MINUTES),
                 idempotency_key=idempotency_key,
             )
             SaleItem.objects.bulk_create([
@@ -925,6 +929,9 @@ class WompiCheckoutView(APIView):
 
     def _widget_response(self, sale, response_status):
         payment = sale.payment
+        expiration_time = (
+            wompi_expiration_time(sale.expires_at) if sale.expires_at else ""
+        )
         return Response(
             {
                 "sale_id": sale.id,
@@ -932,9 +939,21 @@ class WompiCheckoutView(APIView):
                 "public_key": os.getenv("WOMPI_PUBLIC_KEY", ""),
                 "currency": "COP",
                 "amount_in_cents": sale.amount_cents,
+                # Firma sin vencimiento: compatible con el frontend actual.
                 "signature_integrity": wompi_integrity_signature(
                     payment.provider_reference,
                     sale.amount_cents,
+                ),
+                # Usar estos dos juntos para que Wompi bloquee pagos tardíos.
+                "expiration_time": expiration_time,
+                "signature_integrity_with_expiration": (
+                    wompi_integrity_signature(
+                        payment.provider_reference,
+                        sale.amount_cents,
+                        expiration_time=expiration_time,
+                    )
+                    if expiration_time
+                    else ""
                 ),
                 "redirect_url": self.request.data.get("redirect_url", ""),
                 "expires_at": sale.expires_at,
@@ -997,19 +1016,8 @@ class WompiTransactionStatusView(APIView):
                 {"detail": "No puedes consultar esta venta."},
                 status=status.HTTP_403_FORBIDDEN,
             )
-        if (
-            sale.status == Sale.Status.PENDING
-            and sale.expires_at
-            and sale.expires_at <= timezone.now()
-        ):
-            sale.status = Sale.Status.EXPIRED
-            sale.save(update_fields=["status", "updated_at"])
-            return Response({
-                "sale_id": sale.id,
-                "sale_status": sale.status,
-                "transaction_status": "EXPIRED",
-                "tickets": [],
-            })
+        # Se consulta Wompi aunque la reserva haya vencido: el cliente pudo
+        # pagar tarde y mark_sale_paid decide si emite tiquetes o reembolso.
         wompi_response = get_wompi_transaction(transaction_id)
         transaction_data = wompi_response.get("data", {})
         if (
@@ -1024,13 +1032,20 @@ class WompiTransactionStatusView(APIView):
             )
 
         transaction_status = transaction_data.get("status", "ERROR")
-        if transaction_status in {"APPROVED", "DECLINED", "ERROR"}:
+        if transaction_status in {"APPROVED", "DECLINED", "ERROR", "VOIDED"}:
             mark_sale_paid(
                 sale,
                 transaction_status,
                 None,
                 wompi_response,
             )
+        elif (
+            sale.status == Sale.Status.PENDING
+            and sale.expires_at
+            and sale.expires_at <= timezone.now()
+        ):
+            sale.status = Sale.Status.EXPIRED
+            sale.save(update_fields=["status", "updated_at"])
         sale.refresh_from_db()
         return Response({
             "sale_id": sale.id,

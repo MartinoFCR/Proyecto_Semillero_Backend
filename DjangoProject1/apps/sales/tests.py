@@ -1,3 +1,4 @@
+import hashlib
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
@@ -577,6 +578,135 @@ class MultiTicketCheckoutTests(APITestCase):
         mark_sale_paid(sale, "APPROVED", "wompi-ref", {})
 
         self.assertEqual(Ticket.objects.filter(sale=sale).count(), 2)
+
+    def _create_online_sale(self, seat, minutes_ago=15, status=Sale.Status.PENDING):
+        sale = Sale.objects.create(
+            buyer=self.user,
+            created_by=self.user,
+            source=Sale.Source.ONLINE,
+            payment_method=Sale.PaymentMethod.WOMPI,
+            status=status,
+            amount_cents=2500000,
+            trip=self.trip,
+            seat=seat,
+            passenger_identification="300000001",
+            passenger_name="Tardío",
+            passenger_email="late@example.com",
+            expires_at=timezone.now() - timedelta(minutes=minutes_ago),
+        )
+        SaleItem.objects.create(
+            sale=sale,
+            trip=self.trip,
+            seat=seat,
+            passenger_identification="300000001",
+            passenger_name="Tardío",
+            passenger_email="late@example.com",
+        )
+        Payment.objects.create(
+            sale=sale,
+            provider="wompi",
+            provider_reference=f"sale-{sale.pk}",
+            amount_cents=sale.amount_cents,
+        )
+        return sale
+
+    @patch("DjangoProject1.apps.sales.services.issue_factus_invoice")
+    def test_late_approved_payment_issues_ticket_when_seat_free(self, _invoice):
+        sale = self._create_online_sale(self.seats[0])
+
+        sale = mark_sale_paid(sale, "APPROVED", None, {"late": True})
+
+        self.assertEqual(sale.status, Sale.Status.PAID)
+        self.assertEqual(Ticket.objects.filter(sale=sale).count(), 1)
+        self.assertEqual(Payment.objects.get(sale=sale).status, "APPROVED")
+
+    @patch("DjangoProject1.apps.sales.services.issue_factus_invoice")
+    def test_late_payment_on_already_expired_sale_issues_ticket(self, _invoice):
+        sale = self._create_online_sale(
+            self.seats[0],
+            status=Sale.Status.EXPIRED,
+        )
+
+        sale = mark_sale_paid(sale, "APPROVED", None, {})
+
+        self.assertEqual(sale.status, Sale.Status.PAID)
+        self.assertEqual(Ticket.objects.filter(sale=sale).count(), 1)
+
+    @patch("DjangoProject1.apps.sales.services.notify_refund_required")
+    @patch("DjangoProject1.apps.sales.services.issue_factus_invoice")
+    def test_late_payment_with_sold_seat_requires_refund(self, invoice, notify):
+        self._create_paid_ticket(self.seats[0])
+        sale = self._create_online_sale(self.seats[0])
+
+        with self.captureOnCommitCallbacks(execute=True):
+            sale = mark_sale_paid(sale, "APPROVED", None, {})
+
+        self.assertEqual(sale.status, Sale.Status.REFUND_REQUIRED)
+        self.assertFalse(Ticket.objects.filter(sale=sale).exists())
+        self.assertEqual(Payment.objects.get(sale=sale).status, "APPROVED")
+        notify.assert_called_once_with(sale.pk)
+        invoice.assert_not_called()
+
+        # Un reintento del webhook no cambia el resultado ni duplica avisos.
+        with self.captureOnCommitCallbacks(execute=True):
+            mark_sale_paid(sale, "APPROVED", None, {})
+        notify.assert_called_once()
+
+    @patch("DjangoProject1.apps.sales.services.notify_refund_required")
+    def test_late_payment_with_seat_held_by_other_requires_refund(self, notify):
+        sale = self._create_online_sale(self.seats[0])
+        other_hold = self._create_online_sale(self.seats[0], minutes_ago=-5)
+
+        sale = mark_sale_paid(sale, "APPROVED", None, {})
+
+        self.assertEqual(sale.status, Sale.Status.REFUND_REQUIRED)
+        other_hold.refresh_from_db()
+        self.assertEqual(other_hold.status, Sale.Status.PENDING)
+
+    def test_late_declined_payment_marks_sale_expired(self):
+        sale = self._create_online_sale(self.seats[0])
+
+        sale = mark_sale_paid(sale, "DECLINED", None, {})
+
+        self.assertEqual(sale.status, Sale.Status.EXPIRED)
+        self.assertEqual(Payment.objects.get(sale=sale).status, "DECLINED")
+
+    @patch.dict("os.environ", {"WOMPI_INTEGRITY_SECRET": "secret"})
+    def test_checkout_returns_ten_minute_hold_and_expiration_signature(self):
+        response = self.client.post(
+            reverse("wompi-checkout"),
+            {
+                "trip": self.trip.pk,
+                "passengers": [
+                    {
+                        "seat": self.seats[0].pk,
+                        "identification_document_code": "13",
+                        "identification_number": "200000001",
+                        "name": "Ana",
+                        "email": "ana@example.com",
+                    },
+                ],
+            },
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="checkout-expiration",
+        )
+
+        self.assertEqual(response.status_code, 201, response.data)
+        sale = Sale.objects.get(pk=response.data["sale_id"])
+        remaining = sale.expires_at - timezone.now()
+        self.assertGreater(remaining, timedelta(minutes=9))
+        self.assertLessEqual(remaining, timedelta(minutes=10))
+        expiration = response.data["expiration_time"]
+        self.assertRegex(expiration, r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
+        expected = hashlib.sha256(
+            f"{response.data['reference']}{sale.amount_cents}COP"
+            f"{expiration}secret".encode()
+        ).hexdigest()
+        self.assertEqual(
+            response.data["signature_integrity_with_expiration"],
+            expected,
+        )
+        self.assertNotEqual(response.data["signature_integrity"], expected)
 
     def test_invoice_is_not_visible_to_another_buyer(self):
         other = get_user_model().objects.create_user(

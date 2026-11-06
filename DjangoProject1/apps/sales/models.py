@@ -19,6 +19,7 @@ class Sale(models.Model):
         FAILED = "failed", "Fallida"
         CANCELLED = "cancelled", "Cancelada"
         EXPIRED = "expired", "Expirada"
+        REFUND_REQUIRED = "refund_required", "Pagada sin silla (reembolso)"
 
     class PaymentMethod(models.TextChoices):
         WOMPI = "wompi", "Wompi"
