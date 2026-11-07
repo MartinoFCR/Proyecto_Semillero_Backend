@@ -641,6 +641,15 @@ POST   /api/fleet/devices/{id}/unassign/
 ```
 *(El campo `bus` es opcional; si no se envía, el dispositivo queda disponible en bodega/inventario).*
 
+**Seguridad estilo Token de GitHub:**
+Al registrar el dispositivo con `POST /api/fleet/devices/`, el backend autogenera un token de seguridad único de alta entropía (`raw_api_key`), por ejemplo `esp_live_aBcDe123...`. 
+- **Esta clave en texto plano SOLO se retorna una única vez en la respuesta del POST de creación**.
+- En la base de datos se almacena exclusivamente el hash criptográfico (PBKDF2/SHA256) y un prefijo identificador (`api_key_prefix` ej. `esp_live_aBcD...`).
+- En las consultas subsecuentes (`GET`, `PUT`, `PATCH`), el campo `api_key` solo devuelve dicho prefijo enmascarado y jamás la contraseña real.
+- Si la clave se pierde o se compromete, un administrador puede regenerarla mediante:
+  `POST /api/fleet/devices/{id}/regenerate-key/`
+  La respuesta entregará la nueva clave en texto plano por única vez y revocará inmediatamente la anterior.
+
 - Asignar a un bus: `POST /api/fleet/devices/{id}/assign/` con cuerpo `{"bus": 2}`.
 - Desvincular de un bus: `POST /api/fleet/devices/{id}/unassign/` (deja el dispositivo libre para otro bus).
 - También se puede asignar/desvincular desde el bus:
@@ -660,6 +669,7 @@ Cuerpo de la solicitud (Payload emitido por el microcontrolador):
 ```json
 {
   "device_id": "ESP32_BUS_001",
+  "api_key": "esp_live_aBcDe123...",
   "timestamp": "2026-11-06T21:45:00Z",
   "gps": {
     "lat": 6.2442,
@@ -677,9 +687,10 @@ Cuerpo de la solicitud (Payload emitido por el microcontrolador):
 ```
 
 *Lógica del servidor:*
-1. Identifica el bus al que está asignado `device_id`.
-2. Actualiza `last_ping_at` del dispositivo.
-3. Si el bus tiene un viaje activo (`scheduled` o `in_progress`), almacena la coordenada en `Reading` y actualiza la ocupación de cada silla en `CurrentSeatState` y `SeatsStateRecord`.
+1. Identifica el dispositivo por `device_id` y valida que esté activo.
+2. Si el dispositivo tiene una clave configurada, verifica que `api_key` coincida con el hash seguro registrado. Si no coincide, rechaza con `400 Bad Request`.
+3. Actualiza `last_ping_at` del dispositivo.
+4. Si el bus tiene un viaje activo (`scheduled` o `in_progress`), almacena la coordenada en `Reading` (con `time_stamp` del GPS y `created_at` de recepción en el servidor) y actualiza la ocupación de cada silla en `CurrentSeatState` y `SeatsStateRecord`.
 
 ### Sillas
 

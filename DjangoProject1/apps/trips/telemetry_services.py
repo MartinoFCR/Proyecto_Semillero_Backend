@@ -52,6 +52,12 @@ def ingest_device_telemetry(payload: dict) -> dict:
     if device.state != GPSDevice.State.ACTIVE:
         raise ValidationError({"device_id": f"El dispositivo '{device.name}' se encuentra en estado '{device.state}' y no puede reportar datos."})
 
+    # Si el dispositivo tiene configurada una clave de seguridad (api_key_hash), validar el token entrante
+    if device.api_key_hash:
+        incoming_key = payload.get("api_key")
+        if not incoming_key or not device.check_api_key(incoming_key):
+            raise ValidationError({"api_key": "Clave de seguridad del dispositivo ausente o no coincide."})
+
     # Timestamp de la lectura (respeta el reloj satelital del ESP32 si viene informado)
     time_stamp = timezone.now()
     raw_timestamp = payload.get("timestamp")

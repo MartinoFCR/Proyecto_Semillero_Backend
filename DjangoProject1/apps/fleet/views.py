@@ -1,3 +1,4 @@
+import secrets
 from django.db import models
 from rest_framework import status
 from rest_framework.decorators import action
@@ -149,6 +150,35 @@ class GPSDeviceViewSet(ModelViewSet):
             )
 
         return queryset
+
+    def perform_create(self, serializer):
+        # Generar clave segura única estilo token (ej. esp_live_32caracteres)
+        raw_key = f"esp_live_{secrets.token_urlsafe(24)}"
+        device = serializer.save()
+        device.set_api_key(raw_key)
+        device.save(update_fields=["api_key_hash", "api_key_prefix"])
+        # Inyectar temporalmente en el serializer para retornarla únicamente en la respuesta de creación
+        device.raw_api_key = raw_key
+        serializer.instance = device
+
+    @action(detail=True, methods=["post"], url_path="regenerate-key")
+    def regenerate_key(self, request, pk=None):
+        """Regenera la clave de seguridad del dispositivo. La clave anterior queda invalidada."""
+        device = self.get_object()
+        raw_key = f"esp_live_{secrets.token_urlsafe(24)}"
+        device.set_api_key(raw_key)
+        device.save(update_fields=["api_key_hash", "api_key_prefix"])
+
+        data = GPSDeviceSerializer(device).data
+        data["raw_api_key"] = raw_key
+        return Response(
+            {
+                "detail": "Clave del dispositivo regenerada exitosamente. Guarda esta clave ahora, no volverá a mostrarse.",
+                "device": data,
+                "api_key": raw_key,
+            },
+            status=status.HTTP_200_OK,
+        )
 
     @action(detail=True, methods=["post"], url_path="assign")
     def assign_to_bus(self, request, pk=None):

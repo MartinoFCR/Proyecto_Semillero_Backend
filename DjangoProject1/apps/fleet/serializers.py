@@ -108,6 +108,16 @@ class SeatSerializer(serializers.ModelSerializer):
 
 class GPSDeviceSerializer(serializers.ModelSerializer):
     bus_plate = serializers.CharField(source="bus.plate", read_only=True)
+    api_key = serializers.CharField(
+        read_only=True,
+        source="api_key_prefix",
+        help_text="Prefijo público del token (ej. esp_live_...). La clave completa solo se muestra una vez al crear.",
+    )
+    raw_api_key = serializers.CharField(
+        read_only=True,
+        required=False,
+        help_text="Clave en texto plano generada. ÚNICAMENTE visible al crear el dispositivo.",
+    )
 
     class Meta:
         model = GPSDevice
@@ -118,13 +128,14 @@ class GPSDeviceSerializer(serializers.ModelSerializer):
             "model",
             "state",
             "api_key",
+            "raw_api_key",
             "bus",
             "bus_plate",
             "last_ping_at",
             "created_at",
             "updated_at",
         )
-        read_only_fields = ("id", "bus_plate", "last_ping_at", "created_at", "updated_at")
+        read_only_fields = ("id", "bus_plate", "api_key", "raw_api_key", "last_ping_at", "created_at", "updated_at")
 
     def validate_device_id(self, value):
         val = value.strip()
