@@ -5,6 +5,7 @@ from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.viewsets import ModelViewSet, ReadOnlyModelViewSet
+from django.db import transaction
 from django.utils import timezone
 from DjangoProject1.apps.fleet.services import complete_seats_for_bus
 from DjangoProject1.apps.sales.models import Sale, SaleItem, Ticket
