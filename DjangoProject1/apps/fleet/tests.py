@@ -300,9 +300,8 @@ class SeatPlanCanonicalAndReconciliationTests(TestCase):
         self.assertEqual(Seat.objects.filter(bus=self.bus).count(), 2)
 
 
-class DriverUnifiedCreationTests(TestCase):
-    def test_create_driver_without_user_id_creates_driver_user_automatically(self):
-        from DjangoProject1.apps.accounts.models import User
+class DriverCreationTests(TestCase):
+    def test_create_driver_pure_operational_without_user(self):
         from DjangoProject1.apps.fleet.models import Driver
         from DjangoProject1.apps.fleet.serializers import DriverSerializer
 
@@ -311,73 +310,35 @@ class DriverUnifiedCreationTests(TestCase):
             "license_number": "LIC-998877",
             "address": "Calle 45 # 10-20",
             "phone_number": "3109876543",
-            "email": "juan.conductor@example.com",
-            "identification_number": "1098765432",
-            "identification_document_code": "13",
         }
 
         serializer = DriverSerializer(data=data)
         self.assertTrue(serializer.is_valid(), serializer.errors)
         driver = serializer.save()
 
-        self.assertIsNotNone(driver.user)
-        self.assertEqual(driver.user.role, User.Role.DRIVER)
-        self.assertEqual(driver.user.identification_number, "1098765432")
-        self.assertEqual(driver.user.email, "juan.conductor@example.com")
-        self.assertEqual(driver.user.first_name, "Juan")
-        self.assertEqual(driver.user.last_name, "Pérez Conductor")
-        self.assertTrue(driver.user.password_change_required)
-        # La contraseña por defecto es la identificación
-        self.assertTrue(driver.user.check_password("1098765432"))
+        self.assertIsNone(driver.user)
+        self.assertEqual(driver.full_name, "Juan Pérez Conductor")
+        self.assertEqual(driver.license_number, "LIC-998877")
+        self.assertEqual(driver.phone_number, "3109876543")
 
-    def test_create_driver_with_existing_driver_user_succeeds(self):
-        from DjangoProject1.apps.accounts.models import User
+    def test_create_driver_duplicate_license_fails(self):
         from DjangoProject1.apps.fleet.models import Driver
         from DjangoProject1.apps.fleet.serializers import DriverSerializer
 
-        existing_user = User.objects.create_user(
-            username="existing_driver_user",
-            email="existing_driver@example.com",
-            identification_number="88887777",
-            role=User.Role.DRIVER,
-            password="securepassword",
+        Driver.objects.create(
+            full_name="Driver 1",
+            license_number="LIC-DUP-1",
+            address="Calle 1",
+            phone_number="3000000000",
         )
 
         data = {
-            "full_name": "Pedro Existente",
-            "license_number": "LIC-EXIST-1",
-            "address": "Carrera 7 # 12-34",
+            "full_name": "Driver 2",
+            "license_number": "LIC-DUP-1",
+            "address": "Calle 2",
             "phone_number": "3000000001",
-            "user": existing_user.id,
-        }
-
-        serializer = DriverSerializer(data=data)
-        self.assertTrue(serializer.is_valid(), serializer.errors)
-        driver = serializer.save()
-
-        self.assertEqual(driver.user.id, existing_user.id)
-        self.assertEqual(driver.user.role, User.Role.DRIVER)
-
-    def test_create_driver_with_client_user_role_fails_validation(self):
-        from DjangoProject1.apps.accounts.models import User
-        from DjangoProject1.apps.fleet.serializers import DriverSerializer
-
-        client_user = User.objects.create_user(
-            username="client_user_1",
-            email="client1@example.com",
-            identification_number="11112222",
-            role=User.Role.CLIENT,
-            password="securepassword",
-        )
-
-        data = {
-            "full_name": "Intento Fallido",
-            "license_number": "LIC-FAIL",
-            "address": "Av 1",
-            "phone_number": "3000000002",
-            "user": client_user.id,
         }
 
         serializer = DriverSerializer(data=data)
         self.assertFalse(serializer.is_valid())
-        self.assertIn("user", serializer.errors)
+        self.assertIn("license_number", serializer.errors)

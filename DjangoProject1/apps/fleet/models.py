@@ -43,7 +43,9 @@ class Driver(models.Model):
     full_name = models.CharField(max_length=70, null=False)
     user = models.OneToOneField(
         settings.AUTH_USER_MODEL,
-        on_delete=models.PROTECT,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
         related_name='driver_profile'
     )
     license_number = models.CharField(max_length=20, null=False, unique=True)

@@ -27,13 +27,10 @@ class BusTypeViewSet(ModelViewSet):
 class DriverViewSet(ModelViewSet):
     queryset = Driver.objects.select_related("user").all()
     serializer_class = DriverSerializer
-    permission_classes = [IsAdminOrOwnDriver]
+    permission_classes = [IsAdminOrReadOnly]
 
     def get_queryset(self):
-        queryset = super().get_queryset()
-        if self.request.user.role == "admin":
-            return queryset
-        return queryset.filter(user=self.request.user)
+        return super().get_queryset()
 
 
 class SeatViewSet(ModelViewSet):
