@@ -1,4 +1,5 @@
 
+from django.db import models
 from rest_framework.viewsets import ModelViewSet
 
 from DjangoProject1.apps.fleet.models import Bus, BusType, Driver, Seat
@@ -25,12 +26,32 @@ class BusTypeViewSet(ModelViewSet):
 
 
 class DriverViewSet(ModelViewSet):
-    queryset = Driver.objects.select_related("user").all()
+    queryset = Driver.objects.all().order_by("id")
     serializer_class = DriverSerializer
     permission_classes = [IsAdminOrReadOnly]
 
     def get_queryset(self):
-        return super().get_queryset()
+        queryset = super().get_queryset()
+        search = self.request.query_params.get("search", "").strip()
+        license_num = self.request.query_params.get("license_number", "").strip()
+        is_active_param = self.request.query_params.get("is_active")
+
+        if is_active_param is not None:
+            val = is_active_param.strip().lower()
+            if val in {"true", "1"}:
+                queryset = queryset.filter(is_active=True)
+            elif val in {"false", "0"}:
+                queryset = queryset.filter(is_active=False)
+
+        if license_num:
+            queryset = queryset.filter(license_number__icontains=license_num)
+        if search:
+            queryset = queryset.filter(
+                models.Q(full_name__icontains=search)
+                | models.Q(license_number__icontains=search)
+                | models.Q(phone_number__icontains=search)
+            )
+        return queryset
 
 
 class SeatViewSet(ModelViewSet):

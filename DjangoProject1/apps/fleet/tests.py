@@ -342,3 +342,51 @@ class DriverCreationTests(TestCase):
         serializer = DriverSerializer(data=data)
         self.assertFalse(serializer.is_valid())
         self.assertIn("license_number", serializer.errors)
+
+    def test_filter_and_search_drivers(self):
+        from django.test import RequestFactory
+        from DjangoProject1.apps.fleet.models import Driver
+        from DjangoProject1.apps.fleet.views import DriverViewSet
+        from django.contrib.auth import get_user_model
+
+        admin_user = get_user_model().objects.create_user(
+            username="admin_fleet_test",
+            email="admin_fleet@example.com",
+            role="admin",
+            identification_number="99881122",
+        )
+
+        d1 = Driver.objects.create(
+            full_name="Carlos Mario Gómez",
+            license_number="LIC-ABC-101",
+            address="Calle 10",
+            phone_number="3001112233",
+            is_active=True,
+        )
+        d2 = Driver.objects.create(
+            full_name="Andrés Felipe Restrepo",
+            license_number="LIC-XYZ-202",
+            address="Carrera 20",
+            phone_number="3004445566",
+            is_active=False,
+        )
+
+        rf = RequestFactory()
+        view = DriverViewSet()
+
+        # Búsqueda por texto
+        req = rf.get("/api/fleet/drivers/?search=Gómez")
+        req.user = admin_user
+        view.request = req
+        view.format_kwarg = None
+        qs = view.get_queryset()
+        self.assertEqual(qs.count(), 1)
+        self.assertEqual(qs.first().id, d1.id)
+
+        # Filtro por estado activo
+        req_active = rf.get("/api/fleet/drivers/?is_active=false")
+        req_active.user = admin_user
+        view.request = req_active
+        qs_inactive = view.get_queryset()
+        self.assertEqual(qs_inactive.count(), 1)
+        self.assertEqual(qs_inactive.first().id, d2.id)

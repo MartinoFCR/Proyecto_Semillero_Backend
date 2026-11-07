@@ -67,6 +67,7 @@ class DriverSerializer(serializers.ModelSerializer):
             "license_number",
             "address",
             "phone_number",
+            "is_active",
         )
 
     def validate_full_name(self, value):

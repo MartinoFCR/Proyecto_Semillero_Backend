@@ -51,6 +51,7 @@ class Driver(models.Model):
     license_number = models.CharField(max_length=20, null=False, unique=True)
     address = models.CharField(max_length=50, null=False)
     phone_number = models.CharField(max_length=20, null=False)
+    is_active = models.BooleanField(default=True)
 
     class Meta:
         verbose_name_plural = 'Conductores'

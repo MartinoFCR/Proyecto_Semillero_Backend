@@ -19,6 +19,8 @@ class TripSerializer(serializers.ModelSerializer):
         source="route.destination.place_name",
         read_only=True,
     )
+    driver_name = serializers.CharField(source="driver.full_name", read_only=True)
+    bus_plate = serializers.CharField(source="bus.plate", read_only=True)
 
     class Meta:
         model = Trip
@@ -65,6 +67,44 @@ class TripSerializer(serializers.ModelSerializer):
                 "odometer_end":
                     "El odómetro final no puede ser inferior al inicial."
             })
+
+        # Validación de solapamiento de horario para el conductor
+        driver = attrs.get("driver", instance.driver if instance else None)
+        if driver:
+            if not driver.is_active:
+                raise serializers.ValidationError({
+                    "driver": f"El conductor '{driver.full_name}' se encuentra inactivo y no puede ser asignado a viajes."
+                })
+
+            if start:
+                # Buscar viajes del mismo conductor que se solapen
+                # Si tiene date_time_end, se solapa si el rango se cruza.
+                # Si no tiene date_time_end aún, se compara la misma salida exacta.
+                overlapping_trips = Trip.objects.filter(
+                    driver=driver,
+                    trip_state__in=[Trip.TripState.SCHEDULED, Trip.TripState.IN_PROGRESS],
+                )
+                if instance:
+                    overlapping_trips = overlapping_trips.exclude(pk=instance.pk)
+
+                if end:
+                    # Caso rango completo: inicio < otro.fin y fin > otro.inicio
+                    overlapping_trips = overlapping_trips.filter(
+                        date_time_start__lt=end,
+                        date_time_end__gt=start,
+                    )
+                else:
+                    overlapping_trips = overlapping_trips.filter(
+                        date_time_start=start,
+                    )
+
+                if overlapping_trips.exists():
+                    raise serializers.ValidationError({
+                        "driver": (
+                            f"El conductor '{driver.full_name}' ya tiene asignado otro viaje activo "
+                            f"en este mismo horario."
+                        )
+                    })
 
         return attrs
 

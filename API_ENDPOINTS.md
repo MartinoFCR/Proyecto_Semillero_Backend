@@ -585,6 +585,9 @@ Estados de bus: `Active`, `Inactive`, `Maintenance`.
 
 ```text
 GET    /api/fleet/drivers/
+GET    /api/fleet/drivers/?search={nombre_licencia_o_telefono}
+GET    /api/fleet/drivers/?is_active={true|false}
+GET    /api/fleet/drivers/?license_number={licencia}
 POST   /api/fleet/drivers/
 GET    /api/fleet/drivers/{id}/
 PUT    /api/fleet/drivers/{id}/
@@ -601,7 +604,8 @@ El conductor se registra únicamente con sus datos laborales/operativos. No requ
   "full_name": "Carlos Conductor",
   "license_number": "LIC123456",
   "address": "Calle 1 # 2-3",
-  "phone_number": "3001234567"
+  "phone_number": "3001234567",
+  "is_active": true
 }
 ```
 
