@@ -390,3 +390,54 @@ class DriverCreationTests(TestCase):
         qs_inactive = view.get_queryset()
         self.assertEqual(qs_inactive.count(), 1)
         self.assertEqual(qs_inactive.first().id, d2.id)
+
+    def test_recalculate_seat_positions_preserves_ids_and_corrects_offset(self):
+        from DjangoProject1.apps.fleet.models import Bus, Seat
+        from DjangoProject1.apps.fleet.services import recalculate_seat_positions
+
+        bus = Bus.objects.create(
+            plate="BUS-REPOS-01",
+            capacity=20,
+            model="2024",
+            state=Bus.State.ACTIVE,
+        )
+
+        # Crear sillas con posiciones intencionalmente desplazadas desde la silla 11
+        created_seats = []
+        for i in range(1, 21):
+            s = Seat.objects.create(
+                bus=bus,
+                seat_number=str(i),
+                row="99" if i >= 11 else str(((i - 1) // 4) + 1),
+                col="99" if i >= 11 else str(((i - 1) % 4) + 1),
+            )
+            created_seats.append(s)
+
+        initial_ids = {s.id for s in created_seats}
+
+        # 1. Probar dry-run: simula pero no guarda
+        dry_res = recalculate_seat_positions(bus, dry_run=True)
+        self.assertTrue(dry_res["dry_run"])
+        self.assertEqual(dry_res["updated_count"], 10)
+        self.assertEqual(dry_res["unchanged_count"], 10)
+
+        # Verificar que en BD siguen con row="99"
+        seat_11 = Seat.objects.get(bus=bus, seat_number="11")
+        self.assertEqual(seat_11.row, "99")
+
+        # 2. Aplicar cambios reales
+        res = recalculate_seat_positions(bus, dry_run=False)
+        self.assertFalse(res["dry_run"])
+        self.assertEqual(res["updated_count"], 10)
+
+        # Verificar que todos los IDs se conservaron exactamente iguales
+        all_seats = list(Seat.objects.filter(bus=bus))
+        self.assertEqual({s.id for s in all_seats}, initial_ids)
+
+        # Verificar que cada silla cumple la fórmula consecutiva 2 + pasillo + 2
+        for seat in all_seats:
+            num = int(seat.seat_number)
+            expected_row = str(((num - 1) // 4) + 1)
+            expected_col = str(((num - 1) % 4) + 1)
+            self.assertEqual(seat.row, expected_row, f"Fila incorrecta en silla {num}")
+            self.assertEqual(seat.col, expected_col, f"Columna incorrecta en silla {num}")

@@ -245,6 +245,68 @@ def reconcile_bus_seats(bus, dry_run=True):
     }
 
 
+def recalculate_seat_positions(bus, columns_per_row=4, dry_run=True):
+    """Audita y recalcula las posiciones físicas (row y col) de los asientos existentes de un bus.
+
+    Para un plano consecutivo de 2 + pasillo + 2 (4 columnas por fila):
+        numero = int(canonical_seat_number(seat.seat_number))
+        row = ((numero - 1) // 4) + 1
+        col = ((numero - 1) % 4) + 1
+
+    Conserva estrictamente:
+    - Los IDs originales de la tabla Seat.
+    - Las etiquetas originales (ej. '01' se queda '01').
+    - Todas las referencias relacionales (ventas, tiquetes, check-ins, lecturas y sensores).
+
+    Solo actualiza los campos row y col en los asientos cuyas posiciones estaban desplazadas.
+    """
+    seats = list(Seat.objects.filter(bus=bus).order_by("id"))
+    updates = []
+    unchanged = []
+
+    with transaction.atomic():
+        for seat in seats:
+            c_num_str = canonical_seat_number(seat.seat_number)
+            if not c_num_str.isdigit():
+                continue
+
+            num = int(c_num_str)
+            target_row = str(((num - 1) // columns_per_row) + 1)
+            target_col = str(((num - 1) % columns_per_row) + 1)
+
+            if str(seat.row) != target_row or str(seat.col) != target_col:
+                updates.append({
+                    "seat_id": seat.id,
+                    "seat_number": seat.seat_number,
+                    "canonical_number": num,
+                    "previous_position": (str(seat.row), str(seat.col)),
+                    "new_position": (target_row, target_col),
+                })
+                seat.row = target_row
+                seat.col = target_col
+                if not dry_run:
+                    seat.save(update_fields=["row", "col"])
+            else:
+                unchanged.append({
+                    "seat_id": seat.id,
+                    "seat_number": seat.seat_number,
+                    "position": (target_row, target_col),
+                })
+
+        if dry_run:
+            transaction.set_rollback(True)
+
+    return {
+        "bus_id": bus.id,
+        "bus_plate": bus.plate,
+        "dry_run": dry_run,
+        "total_seats": len(seats),
+        "updated_count": len(updates),
+        "unchanged_count": len(unchanged),
+        "updates": updates,
+    }
+
+
 def complete_seats_for_bus(bus, target_capacity=None, columns_per_row=4):
     """Comprueba y completa los registros Seat de un bus hasta su capacidad.
 
