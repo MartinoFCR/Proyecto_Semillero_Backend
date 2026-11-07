@@ -9,7 +9,7 @@ from DjangoProject1.apps.fleet.serializers import (
     SeatSerializer,
 )
 from DjangoProject1.apps.fleet.services import complete_seats_for_bus
-from DjangoProject1.permissions import IsAdminOrReadOnly, IsAdminOrOwnDriver
+from DjangoProject1.permissions import IsAdminOrReadOnly
 
 
 class BusViewSet(ModelViewSet):

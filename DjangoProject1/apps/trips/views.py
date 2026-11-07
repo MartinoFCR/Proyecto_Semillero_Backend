@@ -48,7 +48,6 @@ class TripViewSet(ModelViewSet):
         queryset = Trip.objects.select_related(
             "bus",
             "driver",
-            "driver__user",
             "route",
             "route__origin",
             "route__destination",
