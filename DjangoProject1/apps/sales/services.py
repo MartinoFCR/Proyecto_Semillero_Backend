@@ -716,18 +716,33 @@ def issue_factus_invoice(sale_id):
             result = json.loads(response.read().decode("utf-8"))
     except HTTPError as exc:
         detail = ""
+        raw_body_data = None
         try:
-            response_data = json.loads(exc.read().decode("utf-8"))
-            detail = response_data.get("message") or response_data.get("error")
-            if not detail and response_data.get("errors"):
-                detail = json.dumps(response_data["errors"], ensure_ascii=False)
+            raw_text = exc.read().decode("utf-8")
+            raw_body_data = json.loads(raw_text)
+            msg = raw_body_data.get("message") or raw_body_data.get("error") or ""
+            errs = raw_body_data.get("errors")
+            if errs and isinstance(errs, dict):
+                # Formatear lista de errores específicos: campo: error1, error2
+                err_details = [
+                    f"{field}: {', '.join(msgs) if isinstance(msgs, list) else msgs}"
+                    for field, msgs in errs.items()
+                ]
+                detail = f"{msg} ({'; '.join(err_details)})" if msg else "; ".join(err_details)
+            elif errs:
+                detail = f"{msg}: {errs}" if msg else str(errs)
+            else:
+                detail = msg
         except (UnicodeDecodeError, json.JSONDecodeError, AttributeError):
             detail = ""
         invoice.status = FactusInvoice.Status.ERROR
+        invoice.raw_response = raw_body_data or {"error_code": exc.code, "detail": detail}
         invoice.error_message = (
             f"Factus rechazó la factura ({exc.code})."
             + (f" Detalle: {detail}" if detail else "")
         )[:2000]
+        invoice.save(update_fields=["status", "error_message", "raw_response", "updated_at"])
+        return invoice
         invoice.save(update_fields=["status", "error_message", "updated_at"])
         return invoice
     except (
