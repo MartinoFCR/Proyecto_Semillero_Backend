@@ -1192,7 +1192,7 @@ Solicitud:
 
 `redirect_url` es opcional. El usuario debe estar autenticado.
 El comprador es el usuario autenticado; no se crean cuentas para los
-pasajeros. Se permiten máximo 10 boletas por compra. La clave de idempotencia
+pasajeros. No hay restricción artificial de máximo 10 boletas; se pueden comprar tantas sillas como estén disponibles en el viaje. La clave de idempotencia
 es obligatoria y repetirla devuelve la misma venta sin crear otra.
 
 El backend valida las sillas (completando los registros del bus si faltaban respecto a su capacidad), obtiene el precio de `TripFare`, crea una venta `pending`, reserva todas las sillas durante **10 minutos** y devuelve los datos para el Widget de Wompi:

@@ -282,9 +282,9 @@ class MultiTicketCheckoutTests(APITestCase):
         available_count = sum(1 for s in seats if s["status"] == "available")
         self.assertEqual(available_count, 27)
 
-        # Validar que se mantiene el límite de 10 por compra
+        # Validar que ahora se permite comprar más de 10 boletas sin límite artificial
         self.client.force_authenticate(self.user)
-        too_many_passengers = [
+        more_than_10_passengers = [
             {
                 "seat": all_bus_seats[i].id,
                 "identification_document_code": "13",
@@ -292,15 +292,16 @@ class MultiTicketCheckoutTests(APITestCase):
                 "name": f"Pasajero {i}",
                 "email": f"p{i}@example.com",
             }
-            for i in range(3, 14)  # 11 pasajeros (supera el límite de 10)
+            for i in range(3, 15)  # 12 pasajeros
         ]
-        resp_limit = self.client.post(
+        resp_multiple = self.client.post(
             reverse("wompi-checkout"),
-            {"trip": self.trip.id, "passengers": too_many_passengers},
+            {"trip": self.trip.id, "passengers": more_than_10_passengers},
             format="json",
+            HTTP_IDEMPOTENCY_KEY="multi-12-test-key",
         )
-        self.assertEqual(resp_limit.status_code, 400)
-        self.assertIn("máximo 10", str(resp_limit.data))
+        self.assertEqual(resp_multiple.status_code, 201)
+        self.assertEqual(len(resp_multiple.data["seats"]), 12)
 
     def test_admin_sale_accepts_multiple_seats_and_creates_one_payment(self):
         admin = get_user_model().objects.create_user(

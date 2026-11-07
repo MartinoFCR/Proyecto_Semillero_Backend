@@ -1,4 +1,5 @@
 from django.core.cache import cache
+from django.db import models
 from django.db.models import QuerySet
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
@@ -14,12 +15,38 @@ from .serializers import SupportRequestSerializer
 class SupportRequestViewSet(ModelViewSet):
     serializer_class = SupportRequestSerializer
     permission_classes = [IsAuthenticated]
-    http_method_names = ["get", "post", "head", "options"]
+    http_method_names = ["get", "post", "put", "patch", "head", "options"]
 
     def get_queryset(self) -> QuerySet:
-        return SupportRequest.objects.filter(
-            customer=self.request.user,
-        ).select_related("sale").order_by("-created_at")
+        user = self.request.user
+        queryset = SupportRequest.objects.select_related(
+            "customer",
+            "sale",
+        ).order_by("-created_at")
+
+        if getattr(user, "role", None) != "admin":
+            queryset = queryset.filter(customer=user)
+
+        # Filtros administrativos y de consulta
+        status_param = self.request.query_params.get("status")
+        category_param = self.request.query_params.get("category")
+        search = self.request.query_params.get("search", "").strip()
+
+        if status_param:
+            queryset = queryset.filter(status=status_param)
+        if category_param:
+            queryset = queryset.filter(category=category_param)
+        if search:
+            queryset = queryset.filter(
+                models.Q(subject__icontains=search)
+                | models.Q(message__icontains=search)
+                | models.Q(customer__username__icontains=search)
+                | models.Q(customer__email__icontains=search)
+                | models.Q(customer__first_name__icontains=search)
+                | models.Q(customer__last_name__icontains=search)
+            )
+
+        return queryset
 
     def create(self, request, *args, **kwargs):
         key = f"support-create:{request.user.pk}"

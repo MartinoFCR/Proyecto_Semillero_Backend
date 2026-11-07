@@ -317,7 +317,6 @@ class TicketCheckInView(APIView):
 
 class AdminSaleView(APIView):
     permission_classes = [IsAuthenticated]
-    max_tickets = 10
 
     def post(self, request):
         if request.user.role != "admin":
@@ -344,9 +343,9 @@ class AdminSaleView(APIView):
                 {"seats": "Debe ser una lista de identificadores de silla."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        if not 1 <= len(raw_seats) <= self.max_tickets:
+        if len(raw_seats) < 1:
             return Response(
-                {"seats": f"Debe contener entre 1 y {self.max_tickets} sillas."},
+                {"seats": "Debe contener al menos una silla."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         try:
@@ -740,7 +739,6 @@ class SaleConfirmationResendView(APIView):
 
 class WompiCheckoutView(APIView):
     permission_classes = [IsAuthenticated]
-    max_tickets = 10
 
     def post(self, request):
         idempotency_key = request.headers.get("Idempotency-Key", "").strip()
@@ -777,15 +775,6 @@ class WompiCheckoutView(APIView):
         if not isinstance(passengers, list) or not passengers:
             return Response(
                 {"passengers": "Debe enviar al menos un pasajero."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        if len(passengers) > self.max_tickets:
-            return Response(
-                {
-                    "passengers": (
-                        f"Una compra permite máximo {self.max_tickets} boletas."
-                    )
-                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
