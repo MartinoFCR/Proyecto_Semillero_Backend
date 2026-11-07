@@ -502,3 +502,60 @@ class GPSDeviceModelAndAPITests(TestCase):
         self.assertEqual(resp.status_code, 200)
         device.refresh_from_db()
         self.assertEqual(device.bus.id, self.bus.id)
+
+    def test_gps_device_token_security_and_regeneration(self):
+        from django.test import RequestFactory
+        from DjangoProject1.apps.fleet.models import GPSDevice
+        from DjangoProject1.apps.fleet.views import GPSDeviceViewSet
+
+        rf = RequestFactory()
+
+        # 1. Crear dispositivo mediante el ViewSet
+        view_create = GPSDeviceViewSet.as_view({"post": "create"})
+        post_data = {
+            "name": "ESP32-Seguro",
+            "device_id": "ESP32_SECURE_TOKEN",
+            "model": "ESP32",
+            "state": "active",
+        }
+        req = rf.post("/api/fleet/devices/", post_data, content_type="application/json")
+        req.user = self.admin
+        resp = view_create(req)
+
+        self.assertEqual(resp.status_code, 201)
+        raw_key = resp.data.get("raw_api_key")
+        self.assertTrue(raw_key.startswith("esp_live_"))
+
+        device_id = resp.data["id"]
+        device = GPSDevice.objects.get(pk=device_id)
+
+        # La clave en texto plano NO se almacena en BD
+        self.assertNotEqual(device.api_key_hash, raw_key)
+        self.assertTrue(device.check_api_key(raw_key))
+        self.assertFalse(device.check_api_key("clave_falsa"))
+
+        # 2. Consultar detalle: raw_api_key ya NO debe venir
+        view_retrieve = GPSDeviceViewSet.as_view({"get": "retrieve"})
+        req_get = rf.get(f"/api/fleet/devices/{device_id}/")
+        req_get.user = self.admin
+        resp_get = view_retrieve(req_get, pk=device_id)
+
+        self.assertEqual(resp_get.status_code, 200)
+        self.assertIsNone(resp_get.data.get("raw_api_key"))
+        self.assertTrue(resp_get.data.get("api_key").endswith("..."))
+
+        # 3. Regenerar clave
+        view_regen = GPSDeviceViewSet.as_view({"post": "regenerate_key"})
+        req_regen = rf.post(f"/api/fleet/devices/{device_id}/regenerate-key/")
+        req_regen.user = self.admin
+        resp_regen = view_regen(req_regen, pk=device_id)
+
+        self.assertEqual(resp_regen.status_code, 200)
+        new_key = resp_regen.data.get("api_key")
+        self.assertTrue(new_key.startswith("esp_live_"))
+        self.assertNotEqual(new_key, raw_key)
+
+        device.refresh_from_db()
+        self.assertTrue(device.check_api_key(new_key))
+        self.assertFalse(device.check_api_key(raw_key))  # Clave vieja revocada
+
