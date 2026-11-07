@@ -742,8 +742,20 @@ def issue_factus_invoice(sale_id):
             + (f" Detalle: {detail}" if detail else "")
         )[:2000]
         invoice.save(update_fields=["status", "error_message", "raw_response", "updated_at"])
-        return invoice
-        invoice.save(update_fields=["status", "error_message", "updated_at"])
+
+        # Registro centralizado de observabilidad de errores
+        from DjangoProject1.apps.support.error_logging import log_system_error
+        log_system_error(
+            service="factus",
+            level="error",
+            endpoint="/v2/bills/validate",
+            reference_id=f"Venta #{sale.pk}",
+            error_message=f"Factus rechazó la factura (HTTP {exc.code})",
+            error_details=raw_body_data.get("errors") if raw_body_data else {"raw": detail},
+            request_payload=payload if "payload" in locals() else None,
+            response_payload=raw_body_data,
+            status_code=exc.code,
+        )
         return invoice
     except (
         URLError,

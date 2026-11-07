@@ -48,6 +48,39 @@ class SupportRequestSerializer(serializers.ModelSerializer):
     def validate_status(self, value):
         user = self.context.get("request").user if self.context.get("request") else None
         if user and getattr(user, "role", None) != "admin":
-            if self.instance and self.instance.status != value:
-                raise serializers.ValidationError("Solo un administrador puede modificar el estado de la solicitud.")
+            return self.instance.status if self.instance else SupportRequest.Status.OPEN
         return value
+
+
+class SystemErrorLogSerializer(serializers.ModelSerializer):
+    class Meta:
+        from .models import SystemErrorLog
+        model = SystemErrorLog
+        fields = (
+            "id",
+            "service",
+            "level",
+            "endpoint",
+            "reference_id",
+            "error_message",
+            "error_details",
+            "request_payload",
+            "response_payload",
+            "status_code",
+            "is_resolved",
+            "created_at",
+        )
+        read_only_fields = (
+            "id",
+            "service",
+            "level",
+            "endpoint",
+            "reference_id",
+            "error_message",
+            "error_details",
+            "request_payload",
+            "response_payload",
+            "status_code",
+            "created_at",
+        )
+

@@ -8,8 +8,8 @@ from rest_framework.viewsets import ModelViewSet
 
 from DjangoProject1.apps.sales.models import Sale
 
-from .models import SupportRequest
-from .serializers import SupportRequestSerializer
+from .models import SupportRequest, SystemErrorLog
+from .serializers import SupportRequestSerializer, SystemErrorLogSerializer
 
 
 class SupportRequestViewSet(ModelViewSet):
@@ -47,6 +47,50 @@ class SupportRequestViewSet(ModelViewSet):
             )
 
         return queryset
+
+
+class SystemErrorLogViewSet(ModelViewSet):
+    """Módulo administrativo para auditoría, trazabilidad y resolución de errores del sistema."""
+    queryset = SystemErrorLog.objects.all().order_by("-created_at")
+    serializer_class = SystemErrorLogSerializer
+    permission_classes = [IsAuthenticated]
+    http_method_names = ["get", "patch", "head", "options"]
+
+    def get_queryset(self) -> QuerySet:
+        user = self.request.user
+        # Solo administradores pueden consultar el registro de errores
+        if getattr(user, "role", None) != "admin":
+            return SystemErrorLog.objects.none()
+
+        queryset = super().get_queryset()
+        service_param = self.request.query_params.get("service")
+        level_param = self.request.query_params.get("level")
+        ref_param = self.request.query_params.get("reference_id")
+        resolved_param = self.request.query_params.get("is_resolved")
+        search = self.request.query_params.get("search", "").strip()
+
+        if service_param:
+            queryset = queryset.filter(service=service_param)
+        if level_param:
+            queryset = queryset.filter(level=level_param)
+        if ref_param:
+            queryset = queryset.filter(reference_id__icontains=ref_param)
+        if resolved_param is not None:
+            val = resolved_param.strip().lower()
+            if val in {"true", "1"}:
+                queryset = queryset.filter(is_resolved=True)
+            elif val in {"false", "0"}:
+                queryset = queryset.filter(is_resolved=False)
+
+        if search:
+            queryset = queryset.filter(
+                models.Q(error_message__icontains=search)
+                | models.Q(endpoint__icontains=search)
+                | models.Q(reference_id__icontains=search)
+            )
+
+        return queryset
+
 
     def create(self, request, *args, **kwargs):
         key = f"support-create:{request.user.pk}"
