@@ -206,3 +206,38 @@ class TripValidationAndScheduleTests(TestCase):
         # Verificar que el ping del dispositivo se actualizó
         device.refresh_from_db()
         self.assertIsNotNone(device.last_ping_at)
+
+        # Verificar timestamp satelital vs hora de recepcion en el servidor
+        self.assertIsNotNone(reading.created_at)
+        self.assertIsNotNone(reading.time_stamp)
+
+    def test_telemetry_rejects_invalid_token(self):
+        from DjangoProject1.apps.fleet.models import GPSDevice
+        from DjangoProject1.apps.trips.telemetry_services import ingest_device_telemetry
+
+        device = GPSDevice.objects.create(
+            name="ESP32-Seguro-Auth",
+            device_id="ESP32_SECURE_AUTH_01",
+            state=GPSDevice.State.ACTIVE,
+        )
+        device.set_api_key("esp_live_clave_valida_12345")
+        device.save(update_fields=["api_key_hash", "api_key_prefix"])
+
+        # Intento sin clave
+        with self.assertRaises(ValidationError):
+            ingest_device_telemetry({"device_id": "ESP32_SECURE_AUTH_01"})
+
+        # Intento con clave incorrecta
+        with self.assertRaises(ValidationError):
+            ingest_device_telemetry({
+                "device_id": "ESP32_SECURE_AUTH_01",
+                "api_key": "esp_live_clave_incorrecta",
+            })
+
+        # Intento con clave correcta (no tiene bus asignado pero autentica)
+        res = ingest_device_telemetry({
+            "device_id": "ESP32_SECURE_AUTH_01",
+            "api_key": "esp_live_clave_valida_12345",
+        })
+        self.assertEqual(res["status"], "ping_received_unassigned")
+
