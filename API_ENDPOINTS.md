@@ -592,7 +592,26 @@ PATCH  /api/fleet/drivers/{id}/
 DELETE /api/fleet/drivers/{id}/
 ```
 
-Crear un conductor:
+Crear un conductor (Creación directa unificada recomendada):
+
+No es necesario crear antes un usuario por separado ni buscar IDs numéricos. Puedes registrar el conductor con sus datos y el backend creará automáticamente su usuario de acceso con rol `driver`:
+
+```json
+{
+  "full_name": "Carlos Conductor",
+  "license_number": "LIC123456",
+  "address": "Calle 1 # 2-3",
+  "phone_number": "3001234567",
+  "email": "carlos.conductor@transporte.com",
+  "identification_number": "1098765432",
+  "identification_document_code": "13",
+  "password": "opcional_password_inicial"
+}
+```
+
+*Nota:* Si no se suministra `password`, la contraseña inicial por defecto será su número de identificación y tendrá el indicador `password_change_required=true` activado.
+
+También se mantiene la compatibilidad por si ya existe un usuario con rol `driver` y solo se desea vincular:
 
 ```json
 {
@@ -604,7 +623,7 @@ Crear un conductor:
 }
 ```
 
-El `user` debe referenciar un usuario cuyo rol sea `driver`.
+El `user` (si se envía manualmente) debe referenciar un usuario cuyo rol sea `driver`.
 
 ### Sillas
 
