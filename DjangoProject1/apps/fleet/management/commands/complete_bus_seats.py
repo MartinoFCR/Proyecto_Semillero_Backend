@@ -19,8 +19,13 @@ class Command(BaseCommand):
         parser.add_argument(
             "--plate",
             type=str,
-            default="DEMO-002",
-            help="Placa del bus (por defecto: DEMO-002).",
+            default=None,
+            help="Placa del bus.",
+        )
+        parser.add_argument(
+            "--all-buses",
+            action="store_true",
+            help="Ejecuta la acción sobre todos los buses registrados.",
         )
         parser.add_argument(
             "--diagnose-only",
@@ -45,20 +50,42 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
-        plate = options["plate"].strip()
+        plate = options["plate"].strip() if options["plate"] else None
+        all_buses = options["all_buses"]
         diagnose_only = options["diagnose_only"]
         reconcile = options["reconcile"]
         apply_reconciliation = options["apply_reconciliation"]
         capacity = options["capacity"]
 
-        try:
-            bus = Bus.objects.get(plate__iexact=plate)
-        except Bus.DoesNotExist:
-            raise CommandError(f"No se encontró ningún bus con la placa '{plate}'.")
+        if not plate and not all_buses:
+            plate = "DEMO-002"
 
+        if all_buses:
+            buses = list(Bus.objects.all().order_by("id"))
+        else:
+            try:
+                # Permitir buscar por placa o por ID numérico de bus
+                if plate.isdigit():
+                    bus = Bus.objects.get(id=int(plate))
+                else:
+                    bus = Bus.objects.get(plate__iexact=plate)
+                buses = [bus]
+            except Bus.DoesNotExist:
+                raise CommandError(f"No se encontró ningún bus con la placa o ID '{plate}'.")
+
+        for bus in buses:
+            self._process_bus(
+                bus=bus,
+                diagnose_only=diagnose_only,
+                reconcile=reconcile,
+                apply_reconciliation=apply_reconciliation,
+                capacity=capacity,
+            )
+
+    def _process_bus(self, bus, diagnose_only, reconcile, apply_reconciliation, capacity):
         # 1. Diagnóstico
         diagnosis = diagnose_bus_seats(bus)
-        self.stdout.write(self.style.NOTICE(f"=== Diagnóstico del bus {bus.plate} ==="))
+        self.stdout.write(self.style.NOTICE(f"\n=== Diagnóstico del bus {bus.plate} (ID {bus.id}) ==="))
         self.stdout.write(f"Capacidad: {bus.capacity} | Asientos actuales: {diagnosis['total_seats']}")
         self.stdout.write(f"Consistencia del plano: {'CORRECTA' if not diagnosis['is_inconsistent'] else 'INCONSISTENTE'}")
 
@@ -96,7 +123,7 @@ class Command(BaseCommand):
         try:
             result = complete_seats_for_bus(bus, target_capacity=capacity)
             self.stdout.write(self.style.SUCCESS(
-                f"\nBus {bus.plate} completado exitosamente: "
+                f"Bus {bus.plate} completado exitosamente: "
                 f"Capacidad {result['capacity']}, "
                 f"Existentes {result['existing_seats_count']}, "
                 f"Nuevos creados {result['created_seats_count']}, "
