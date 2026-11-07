@@ -9,8 +9,15 @@ from django.utils import timezone
 from DjangoProject1.apps.fleet.services import complete_seats_for_bus
 from DjangoProject1.apps.sales.models import Sale, SaleItem, Ticket
 
+from rest_framework.decorators import action
+from DjangoProject1.apps.trips.trip_state_services import (
+    get_server_now,
+    compute_trip_operational_state,
+    compute_trip_sales_availability,
+)
 from DjangoProject1.apps.trips.models import (
     Trip,
+    TripPostponementHistory,
     Reading,
     Event,
     CurrentSeatState,
@@ -79,6 +86,168 @@ class TripViewSet(ModelViewSet):
 
         return queryset
 
+    @action(detail=True, methods=["post"], url_path="cancel", permission_classes=[IsAdminRole])
+    def cancel_trip(self, request, pk=None):
+        """Cancela un viaje manualmente. Cierra ventas de inmediato y registra motivo y operador."""
+        trip = self.get_object()
+        if trip.trip_state == Trip.TripState.CANCELLED:
+            return Response(
+                {"detail": "El viaje ya se encuentra cancelado."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        reason = request.data.get("reason", "").strip()
+        if not reason:
+            return Response(
+                {"reason": "El motivo de la cancelación es obligatorio."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        now = get_server_now()
+        trip.trip_state = Trip.TripState.CANCELLED
+        trip.state_source = "manual"
+        trip.manual_operator = request.user
+        trip.manual_action_at = now
+        trip.cancellation_reason = reason
+        trip.save(update_fields=[
+            "trip_state",
+            "state_source",
+            "manual_operator",
+            "manual_action_at",
+            "cancellation_reason",
+        ])
+
+        return Response(
+            {
+                "detail": f"Viaje #{trip.id} cancelado exitosamente.",
+                "trip": self.get_serializer(trip).data,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    @action(detail=True, methods=["post"], url_path="complete", permission_classes=[IsAdminRole])
+    def complete_trip(self, request, pk=None):
+        """Finaliza un viaje manualmente antes de lo programado. Cierra ventas de inmediato."""
+        trip = self.get_object()
+        if trip.trip_state == Trip.TripState.COMPLETED:
+            return Response(
+                {"detail": "El viaje ya se encuentra finalizado."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if trip.trip_state == Trip.TripState.CANCELLED:
+            return Response(
+                {"detail": "No se puede finalizar un viaje cancelado."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        now = get_server_now()
+        trip.trip_state = Trip.TripState.COMPLETED
+        trip.state_source = "manual"
+        trip.manual_operator = request.user
+        trip.manual_action_at = now
+        if not trip.date_time_end:
+            trip.date_time_end = now
+            trip.save(update_fields=["trip_state", "state_source", "manual_operator", "manual_action_at", "date_time_end"])
+        else:
+            trip.save(update_fields=["trip_state", "state_source", "manual_operator", "manual_action_at"])
+
+        return Response(
+            {
+                "detail": f"Viaje #{trip.id} finalizado exitosamente.",
+                "trip": self.get_serializer(trip).data,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    @action(detail=True, methods=["post"], url_path="postpone", permission_classes=[IsAdminRole])
+    def postpone_trip(self, request, pk=None):
+        """Posterga un viaje a una nueva fecha/hora de salida y llegada opcional.
+        
+        Recalcula automáticamente el estado operativo y el cierre de ventas según el nuevo horario,
+        conservando intactas todas las ventas, pagos, tiquetes y facturas existentes, y registrando
+        el historial de la postergación.
+        """
+        from django.utils.dateparse import parse_datetime
+        trip = self.get_object()
+
+        if trip.trip_state in [Trip.TripState.COMPLETED, Trip.TripState.CANCELLED]:
+            return Response(
+                {"detail": f"No se puede postergar un viaje con estado '{trip.trip_state}'."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        new_start_raw = request.data.get("new_date_time_start")
+        new_end_raw = request.data.get("new_date_time_end")
+        reason = request.data.get("reason", "").strip()
+
+        if not new_start_raw:
+            return Response(
+                {"new_date_time_start": "La nueva fecha/hora de salida es obligatoria."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not reason:
+            return Response(
+                {"reason": "El motivo de la postergación es obligatorio."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        parsed_new_start = parse_datetime(new_start_raw)
+        if not parsed_new_start:
+            return Response(
+                {"new_date_time_start": "Formato de fecha inválido (use ISO-8601)."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if timezone.is_naive(parsed_new_start):
+            parsed_new_start = timezone.make_aware(parsed_new_start)
+
+        parsed_new_end = None
+        if new_end_raw:
+            parsed_new_end = parse_datetime(new_end_raw)
+            if not parsed_new_end:
+                return Response(
+                    {"new_date_time_end": "Formato de fecha de llegada inválido."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if timezone.is_naive(parsed_new_end):
+                parsed_new_end = timezone.make_aware(parsed_new_end)
+            if parsed_new_end <= parsed_new_start:
+                return Response(
+                    {"new_date_time_end": "La llegada no puede ser anterior o igual a la salida."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        now = get_server_now()
+        previous_start = trip.date_time_start
+        previous_end = trip.date_time_end
+
+        # Recalcular estado operativo según el nuevo horario
+        trip.date_time_start = parsed_new_start
+        trip.date_time_end = parsed_new_end
+        new_computed_state, _ = compute_trip_operational_state(trip, now)
+        trip.trip_state = new_computed_state
+        trip.state_source = "automatic"
+
+        with transaction.atomic():
+            trip.save(update_fields=["date_time_start", "date_time_end", "trip_state", "state_source"])
+            TripPostponementHistory.objects.create(
+                trip=trip,
+                previous_start=previous_start,
+                previous_end=previous_end,
+                new_start=parsed_new_start,
+                new_end=parsed_new_end,
+                reason=reason,
+                operator=request.user,
+            )
+
+        return Response(
+            {
+                "detail": f"Viaje #{trip.id} postergado exitosamente para {parsed_new_start.isoformat()}.",
+                "trip": self.get_serializer(trip).data,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
 
 class TripFareViewSet(ModelViewSet):
     queryset = TripFare.objects.select_related("trip").all()
@@ -90,15 +259,29 @@ class AvailableSeatsView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request, trip_id):
+        now = get_server_now()
         try:
-            trip = Trip.objects.select_related("bus").get(
+            trip = Trip.objects.select_related("bus", "fare").get(
                 pk=trip_id,
-                trip_state=Trip.TripState.SCHEDULED,
+                trip_state__in=[Trip.TripState.SCHEDULED, Trip.TripState.IN_PROGRESS],
             )
         except Trip.DoesNotExist:
             return Response(
                 {"detail": "Viaje no encontrado o no disponible."},
                 status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # Validar si el viaje tiene las ventas cerradas
+        sales_meta = compute_trip_sales_availability(trip, now)
+        if not sales_meta["can_sell"] and sales_meta["sales_block_reason"] == "sales_closed":
+            return Response(
+                {
+                    "code": "sales_closed",
+                    "detail": "La venta para este viaje cerró diez minutos después de la salida.",
+                    "sales_close_at": sales_meta["sales_close_at"],
+                    "server_time": sales_meta["server_time"],
+                },
+                status=status.HTTP_409_CONFLICT,
             )
 
         try:

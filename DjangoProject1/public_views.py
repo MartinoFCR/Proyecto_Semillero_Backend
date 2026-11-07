@@ -29,28 +29,42 @@ class PublicTripListView(ListAPIView):
     serializer_class = PublicTripSerializer
 
     def get_queryset(self):
-        filters = {
-            "trip_state": Trip.TripState.SCHEDULED,
-            "date_time_start__gte": timezone.now(),
-        }
+        import datetime
+        from django.db.models import Q
+        from DjangoProject1.apps.trips.trip_state_services import get_server_now
+
+        now = get_server_now()
+        # Ventana de venta permitida: hasta 10 minutos después de la salida
+        # Por tanto, date_time_start + 10 min >= now  <=>  date_time_start >= now - 10 min
+        min_start_time = now - datetime.timedelta(minutes=10)
+
+        # Incluir viajes vendibles en scheduled o in_progress dentro de la ventana de 10 min
+        queryset = Trip.objects.filter(
+            trip_state__in=[Trip.TripState.SCHEDULED, Trip.TripState.IN_PROGRESS],
+            date_time_start__gte=min_start_time,
+        ).exclude(
+            trip_state__in=[Trip.TripState.COMPLETED, Trip.TripState.CANCELLED],
+        )
+
         origin = self.request.query_params.get("origin")
         destination = self.request.query_params.get("destination")
         date = self.request.query_params.get("date")
         if origin:
-            filters["route__origin_id"] = origin
+            queryset = queryset.filter(route__origin_id=origin)
         if destination:
-            filters["route__destination_id"] = destination
+            queryset = queryset.filter(route__destination_id=destination)
         if date:
-            filters["date_time_start__date"] = date
+            queryset = queryset.filter(date_time_start__date=date)
+
         return (
-            Trip.objects.filter(**filters)
-            .select_related(
+            queryset.select_related(
                 "route__origin__city__department",
                 "route__destination__city__department",
                 "fare",
-            )
-            .order_by("date_time_start", "id")
+                "bus",
+            ).order_by("date_time_start", "id")
         )
+
 
 
 class CustomerServiceView(APIView):

@@ -26,11 +26,49 @@ class TripSerializer(serializers.ModelSerializer):
     )
     driver_name = serializers.CharField(source="driver.full_name", read_only=True)
     bus_plate = serializers.CharField(source="bus.plate", read_only=True)
+    state_source = serializers.CharField(read_only=True)
+    automatic_completion_at = serializers.SerializerMethodField()
+    sales_close_at = serializers.SerializerMethodField()
+    can_sell = serializers.SerializerMethodField()
+    sales_block_reason = serializers.SerializerMethodField()
+    server_time = serializers.SerializerMethodField()
 
     class Meta:
         model = Trip
         fields = "__all__"
-        read_only_fields = ("id",)
+        read_only_fields = (
+            "id",
+            "state_source",
+            "manual_operator",
+            "manual_action_at",
+            "cancellation_reason",
+            "automatic_completion_at",
+            "sales_close_at",
+            "can_sell",
+            "sales_block_reason",
+            "server_time",
+        )
+
+    def _get_sales_meta(self, trip):
+        if not hasattr(trip, "_cached_sales_meta"):
+            from DjangoProject1.apps.trips.trip_state_services import compute_trip_sales_availability
+            trip._cached_sales_meta = compute_trip_sales_availability(trip)
+        return trip._cached_sales_meta
+
+    def get_automatic_completion_at(self, trip):
+        return self._get_sales_meta(trip)["automatic_completion_at"]
+
+    def get_sales_close_at(self, trip):
+        return self._get_sales_meta(trip)["sales_close_at"]
+
+    def get_can_sell(self, trip):
+        return self._get_sales_meta(trip)["can_sell"]
+
+    def get_sales_block_reason(self, trip):
+        return self._get_sales_meta(trip)["sales_block_reason"]
+
+    def get_server_time(self, trip):
+        return self._get_sales_meta(trip)["server_time"]
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
@@ -151,7 +189,13 @@ class TripSerializer(serializers.ModelSerializer):
         return attrs
 
     def create(self, validated_data):
+        from DjangoProject1.apps.trips.trip_state_services import compute_trip_operational_state
         fare_cents = validated_data.pop("fare_amount_cents", None)
+        # El estado operativo se calcula y asigna automáticamente al crear
+        initial_state, _ = compute_trip_operational_state(Trip(**validated_data))
+        validated_data["trip_state"] = initial_state
+        validated_data["state_source"] = "automatic"
+
         with transaction.atomic():
             trip = super().create(validated_data)
             if fare_cents is not None:

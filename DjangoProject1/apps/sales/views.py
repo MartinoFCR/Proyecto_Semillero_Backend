@@ -475,8 +475,41 @@ class AdminSaleView(APIView):
 
                 trip = Trip.objects.select_related("bus", "fare").get(
                     pk=trip_id,
-                    trip_state=Trip.TripState.SCHEDULED,
+                    trip_state__in=[Trip.TripState.SCHEDULED, Trip.TripState.IN_PROGRESS],
                 )
+                from DjangoProject1.apps.trips.trip_state_services import compute_trip_sales_availability, get_server_now
+                sales_meta = compute_trip_sales_availability(trip, get_server_now())
+                if not sales_meta["can_sell"]:
+                    if sales_meta["sales_block_reason"] == "sales_closed":
+                        return Response(
+                            {
+                                "code": "sales_closed",
+                                "detail": "La venta para este viaje cerró diez minutos después de la salida.",
+                                "sales_close_at": sales_meta["sales_close_at"],
+                                "server_time": sales_meta["server_time"],
+                            },
+                            status=status.HTTP_409_CONFLICT,
+                        )
+                    elif sales_meta["sales_block_reason"] == "trip_cancelled":
+                        return Response(
+                            {"code": "trip_cancelled", "detail": "El viaje fue cancelado y no permite ventas."},
+                            status=status.HTTP_409_CONFLICT,
+                        )
+                    elif sales_meta["sales_block_reason"] == "trip_completed":
+                        return Response(
+                            {"code": "trip_completed", "detail": "El viaje ha finalizado y sus ventas están cerradas."},
+                            status=status.HTTP_409_CONFLICT,
+                        )
+                    elif sales_meta["sales_block_reason"] == "fare_missing":
+                        return Response(
+                            {"code": "fare_missing", "detail": "El viaje no tiene una tarifa válida."},
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
+                    elif sales_meta["sales_block_reason"] == "sold_out":
+                        return Response(
+                            {"code": "sold_out", "detail": "No hay sillas disponibles para este viaje."},
+                            status=status.HTTP_409_CONFLICT,
+                        )
                 if not trip.fare or trip.fare.amount_cents <= 0:
                     return Response(
                         {"detail": "El viaje no tiene una tarifa válida."},
@@ -781,7 +814,7 @@ class WompiCheckoutView(APIView):
         try:
             trip = Trip.objects.select_related("bus", "fare").get(
                 pk=request.data["trip"],
-                trip_state=Trip.TripState.SCHEDULED,
+                trip_state__in=[Trip.TripState.SCHEDULED, Trip.TripState.IN_PROGRESS],
             )
             amount_cents = trip.fare.amount_cents
         except (
@@ -795,6 +828,41 @@ class WompiCheckoutView(APIView):
                 {"detail": "El viaje, la silla o el valor no es válido."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+
+        from DjangoProject1.apps.trips.trip_state_services import compute_trip_sales_availability, get_server_now
+        sales_meta = compute_trip_sales_availability(trip, get_server_now())
+        if not sales_meta["can_sell"]:
+            if sales_meta["sales_block_reason"] == "sales_closed":
+                return Response(
+                    {
+                        "code": "sales_closed",
+                        "detail": "La venta para este viaje cerró diez minutos después de la salida.",
+                        "sales_close_at": sales_meta["sales_close_at"],
+                        "server_time": sales_meta["server_time"],
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+            elif sales_meta["sales_block_reason"] == "trip_cancelled":
+                return Response(
+                    {"code": "trip_cancelled", "detail": "El viaje fue cancelado y no permite ventas."},
+                    status=status.HTTP_409_CONFLICT,
+                )
+            elif sales_meta["sales_block_reason"] == "trip_completed":
+                return Response(
+                    {"code": "trip_completed", "detail": "El viaje ha finalizado y sus ventas están cerradas."},
+                    status=status.HTTP_409_CONFLICT,
+                )
+            elif sales_meta["sales_block_reason"] == "fare_missing":
+                return Response(
+                    {"code": "fare_missing", "detail": "El viaje no tiene una tarifa válida."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            elif sales_meta["sales_block_reason"] == "sold_out":
+                return Response(
+                    {"code": "sold_out", "detail": "No hay sillas disponibles para este viaje."},
+                    status=status.HTTP_409_CONFLICT,
+                )
+
 
         seats_by_id = {}
         normalized_passengers = []
@@ -923,6 +991,23 @@ class WompiCheckoutView(APIView):
                         status=status.HTTP_409_CONFLICT,
                     )
 
+            # Calcular vencimiento: mínimo entre (ahora + 10 min) y sales_close_at
+            from django.utils.dateparse import parse_datetime
+            sales_close_at_dt = parse_datetime(sales_meta["sales_close_at"])
+            standard_hold_limit = now + timedelta(minutes=SALE_HOLD_MINUTES)
+            calculated_expires_at = min(standard_hold_limit, sales_close_at_dt)
+
+            if calculated_expires_at <= now:
+                return Response(
+                    {
+                        "code": "sales_closed",
+                        "detail": "El tiempo disponible para comprar este viaje ha expirado.",
+                        "sales_close_at": sales_meta["sales_close_at"],
+                        "server_time": sales_meta["server_time"],
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+
             first = normalized_passengers[0]
             sale = Sale.objects.create(
                 buyer=request.user,
@@ -939,7 +1024,7 @@ class WompiCheckoutView(APIView):
                 passenger_name=first["name"],
                 passenger_email=first["email"],
                 passenger_telephone=first["telephone"],
-                expires_at=now + timedelta(minutes=SALE_HOLD_MINUTES),
+                expires_at=calculated_expires_at,
                 idempotency_key=idempotency_key,
             )
             SaleItem.objects.bulk_create([

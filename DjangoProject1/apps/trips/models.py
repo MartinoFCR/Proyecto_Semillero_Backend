@@ -1,5 +1,6 @@
 from django.contrib.gis.db import models
 from django.utils import timezone
+from django.conf import settings
 from DjangoProject1.apps.routes.models import Route
 from DjangoProject1.apps.fleet.models import Bus, Driver, Seat
 
@@ -40,7 +41,30 @@ class Trip(models.Model):
         choices=TripState.choices,
         default=TripState.SCHEDULED
     )
-    
+    state_source = models.CharField(
+        max_length=20,
+        default="automatic",
+        choices=[("automatic", "Automático"), ("manual", "Manual")],
+        help_text="Indica si el estado fue fijado manualmente por un operador o calculado automáticamente.",
+    )
+    manual_operator = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="operated_trips",
+        help_text="Operador/Administrador que realizó la última acción manual.",
+    )
+    manual_action_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Fecha y hora en que se ejecutó la acción manual (cancelación/finalización).",
+    )
+    cancellation_reason = models.TextField(
+        blank=True,
+        default="",
+        help_text="Motivo de cancelación registrado por el administrador.",
+    )
 
     class Meta:
         verbose_name_plural = 'Viajes'
@@ -129,3 +153,25 @@ class SeatsStateRecord(models.Model):
     time_stamp = models.DateTimeField(default=timezone.now, help_text="Timestamp original del sensor/GPS del ESP32")
     created_at = models.DateTimeField(auto_now_add=True, help_text="Timestamp de recepción en el servidor")
     occupied = models.BooleanField(default=False)
+
+
+class TripPostponementHistory(models.Model):
+    trip = models.ForeignKey(Trip, on_delete=models.CASCADE, related_name="postponement_history")
+    previous_start = models.DateTimeField()
+    previous_end = models.DateTimeField(null=True, blank=True)
+    new_start = models.DateTimeField()
+    new_end = models.DateTimeField(null=True, blank=True)
+    reason = models.TextField(help_text="Motivo de la postergación.")
+    operator = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="postponed_trips",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = "Historial de postergación de viaje"
+        verbose_name_plural = "Historial de postergaciones de viajes"
+        ordering = ["-created_at"]

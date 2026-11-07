@@ -241,3 +241,43 @@ class TripValidationAndScheduleTests(TestCase):
         })
         self.assertEqual(res["status"], "ping_received_unassigned")
 
+    def test_automatic_trip_states_and_sales_window(self):
+        from DjangoProject1.apps.trips.trip_state_services import (
+            compute_trip_operational_state,
+            compute_trip_sales_availability,
+        )
+        base_time = timezone.now()
+
+        # Viaje programado para dentro de 1 hora
+        trip = Trip.objects.create(
+            bus=self.bus_active,
+            driver=self.driver_active,
+            route=self.route,
+            date_time_start=base_time + timedelta(hours=1),
+        )
+        TripFare.objects.create(trip=trip, amount_cents=50000)
+
+        # 1. Antes de 30 min antes de la salida -> scheduled
+        state_1, _ = compute_trip_operational_state(trip, base_time)
+        self.assertEqual(state_1, "scheduled")
+
+        # 2. Exactamente 29 minutos antes de la salida -> in_progress
+        state_2, _ = compute_trip_operational_state(trip, base_time + timedelta(minutes=31))
+        self.assertEqual(state_2, "in_progress")
+
+        # 3. Disponibilidad de venta: 5 minutos después de la salida -> can_sell True
+        meta_post_start = compute_trip_sales_availability(trip, base_time + timedelta(hours=1, minutes=5))
+        self.assertTrue(meta_post_start["can_sell"])
+        self.assertIsNone(meta_post_start["sales_block_reason"])
+
+        # 4. Disponibilidad de venta: 11 minutos después de la salida -> can_sell False, reason sales_closed
+        meta_closed = compute_trip_sales_availability(trip, base_time + timedelta(hours=1, minutes=11))
+        self.assertFalse(meta_closed["can_sell"])
+        self.assertEqual(meta_closed["sales_block_reason"], "sales_closed")
+
+        # 5. Finalización por 4 horas de respaldo: a las 4h1m después de la salida -> completed
+        state_5, auto_end = compute_trip_operational_state(trip, base_time + timedelta(hours=5, minutes=1))
+        self.assertEqual(state_5, "completed")
+        self.assertEqual(auto_end, trip.date_time_start + timedelta(hours=4))
+
+

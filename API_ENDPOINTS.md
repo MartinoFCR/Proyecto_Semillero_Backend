@@ -871,6 +871,70 @@ Crear un viaje (permite tarifa integrada `fare_amount_cents` en un solo paso):
 
 Estados: `scheduled`, `in_progress`, `completed` y `cancelled`.
 
+### Automatización de Estados Operativos y Disponibilidad de Ventas
+
+El sistema separa el **estado operativo estimado** del viaje de la **disponibilidad para vender pasajes**:
+
+1. **Estados Operativos Automáticos (Zona horaria `America/Bogota`):**
+   - `scheduled`: Hasta 30 minutos antes de la salida programada (`date_time_start - 30 min`).
+   - `in_progress`: Desde 30 minutos antes de la salida hasta su llegada o cierre estimado.
+   - `completed`: Al alcanzar la llegada programada (`date_time_end`); si no tiene llegada registrada, finaliza automáticamente por respaldo a las 4 horas después de la salida.
+   - Al crear un viaje, el backend calcula y asigna su estado inicial de forma automática (`state_source: "automatic"`).
+   - Los viajes cancelados o finalizados manualmente por un operador (`state_source: "manual"`) nunca se revierten automáticamente.
+   - Comando de sincronización periódica: `python manage.py sync_trip_states`.
+
+2. **Acciones Administrativas de Viajes:**
+   - **Cancelar Viaje:** `POST /api/trips/trips/{id}/cancel/`
+     ```json
+     { "reason": "Falla mecánica imprevista en el terminal." }
+     ```
+     Cierra ventas de inmediato, registra operador, fecha de cancelación y motivo.
+   - **Finalizar Viaje:** `POST /api/trips/trips/{id}/complete/`
+     Cierra ventas de inmediato, fija `date_time_end` y registra el operador y fecha de cierre manual.
+   - **Postergar Viaje:** `POST /api/trips/trips/{id}/postpone/`
+     ```json
+     {
+       "new_date_time_start": "2026-11-07T18:00:00-05:00",
+       "new_date_time_end": "2026-11-07T22:00:00-05:00",
+       "reason": "Retraso en vía por deslizamiento de tierra."
+     }
+     ```
+     Recalcula el estado operativo y el cierre de ventas según el nuevo horario. **Conserva intactas** todas las ventas, pagos, tiquetes, reservas y facturas existentes, registrando el historial de postergación en `TripPostponementHistory`.
+
+3. **Reglas de Cierre de Venta (`sales_close_at`):**
+   - `sales_close_at = date_time_start + 10 minutos`.
+   - Se permite comprar (online y taquilla) hasta 10 minutos después de la salida del bus.
+   - A partir del minuto 10, cualquier intento de compra o checkout es rechazado con:
+     ```json
+     HTTP 409 Conflict
+     {
+       "code": "sales_closed",
+       "detail": "La venta para este viaje cerró diez minutos después de la salida.",
+       "sales_close_at": "2026-11-07T15:10:00-05:00",
+       "server_time": "2026-11-07T15:10:00-05:00"
+     }
+     ```
+   - **Recorte de Reservas en Wompi:** El tiempo de retención de las sillas en Wompi se calcula como:
+     `expires_at = min(server_now + 10 minutos, sales_close_at)`.
+     La firma de integridad `signature_integrity_with_expiration` y el `expiration_time` de Wompi se ajustan conjuntamente para que Wompi bloquee pagos tardíos después del cierre de ventas.
+
+4. **Metadatos en Respuestas de Viajes (Públicas y Administrativas):**
+   ```json
+   {
+     "id": 24,
+     "trip_state": "in_progress",
+     "state_source": "automatic",
+     "date_time_start": "2026-11-07T15:00:00-05:00",
+     "date_time_end": null,
+     "automatic_completion_at": "2026-11-07T19:00:00-05:00",
+     "sales_close_at": "2026-11-07T15:10:00-05:00",
+     "can_sell": true,
+     "sales_block_reason": null,
+     "server_time": "2026-11-07T15:07:00-05:00"
+   }
+   ```
+   Valores de `sales_block_reason`: `null`, `sales_closed`, `trip_cancelled`, `trip_completed`, `fare_missing`, `sold_out`.
+
 ### Tarifas
 
 La tarifa pertenece a un viaje y se expresa en centavos de COP. Todos los

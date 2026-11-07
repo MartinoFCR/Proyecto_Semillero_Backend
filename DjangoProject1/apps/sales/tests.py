@@ -958,3 +958,72 @@ class MultiTicketCheckoutTests(APITestCase):
             )
         self.assertEqual(client_resp.status_code, 201)
         self.assertEqual(Seat.objects.filter(bus=self.bus).count(), 30)
+
+    def test_sales_closed_10_minutes_after_departure(self):
+        # Configurar salida del viaje hace 11 minutos
+        past_start = timezone.now() - timedelta(minutes=11)
+        self.trip.date_time_start = past_start
+        self.trip.save(update_fields=["date_time_start"])
+
+        # Intentar compra administrativa
+        admin = self._create_admin("admin-sales-close-test")
+        self.client.force_authenticate(admin)
+        resp_admin = self.client.post(
+            reverse("admin-sale"),
+            {
+                "trip": self.trip.id,
+                "seats": [self.seat_1.id],
+                "identification_number": "999888777",
+                "name": "Intento Tarde",
+                "email": "tarde@example.com",
+                "telephone": "3000000000",
+                "payment_method": "cash",
+            },
+            format="json",
+        )
+        self.assertEqual(resp_admin.status_code, 409)
+        self.assertEqual(resp_admin.data["code"], "sales_closed")
+
+        # Intentar checkout Wompi de cliente
+        self.client.force_authenticate(self.user)
+        resp_client = self.client.post(
+            reverse("wompi-checkout"),
+            {
+                "trip": self.trip.id,
+                "seat": self.seat_1.id,
+            },
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="late-checkout-key",
+        )
+        self.assertEqual(resp_client.status_code, 409)
+        self.assertEqual(resp_client.data["code"], "sales_closed")
+
+    def test_wompi_reservation_clipped_to_sales_close(self):
+        # Salida en 7 minutos. Venta cierra en 17 minutos (date_time_start + 10 min)
+        # Salida: now + 7 min. Cierre: now + 17 min.
+        # Hold estándar: 10 minutos (now + 10 min).
+        # expires_at debe ser el mínimo entre now + 10 min y now + 17 min -> now + 10 min.
+        
+        # Caso B: Salida hace 5 minutos. Venta cierra en 5 minutos (date_time_start + 10 min = now + 5 min).
+        # Hold estándar: now + 10 min.
+        # expires_at DEBE recortarse a now + 5 min (al momento del cierre de ventas).
+        self.trip.date_time_start = timezone.now() - timedelta(minutes=5)
+        self.trip.save(update_fields=["date_time_start"])
+
+        self.client.force_authenticate(self.user)
+        with patch("DjangoProject1.apps.sales.views.wompi_integrity_signature", return_value="sig"):
+            resp = self.client.post(
+                reverse("wompi-checkout"),
+                {
+                    "trip": self.trip.id,
+                    "seat": self.seat_1.id,
+                },
+                format="json",
+                HTTP_IDEMPOTENCY_KEY="clipped-hold-key",
+            )
+        self.assertEqual(resp.status_code, 201)
+        sale = Sale.objects.get(pk=resp.data["sale_id"])
+        sales_close_at = self.trip.date_time_start + timedelta(minutes=10)
+        # La reserva no puede superar sales_close_at
+        self.assertLessEqual(sale.expires_at, sales_close_at + timedelta(seconds=2))
+
