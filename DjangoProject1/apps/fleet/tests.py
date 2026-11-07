@@ -115,3 +115,186 @@ class DemoBusSeatCompletionTests(TestCase):
     def test_management_command_completes_demo002_bus(self):
         out = call_command("complete_bus_seats", plate="DEMO-002")
         self.assertEqual(Seat.objects.filter(bus=self.bus).count(), 30)
+
+
+class SeatPlanCanonicalAndReconciliationTests(TestCase):
+    def setUp(self):
+        self.bus = Bus.objects.create(
+            plate="BUS-CANON-01",
+            capacity=40,
+            model="Scania 2024",
+            state=Bus.State.ACTIVE,
+        )
+
+    def test_canonical_number_matching_with_leading_zeros_capacity_40(self):
+        # Bus con 40 plazas y asientos iniciales '01' a '10'
+        for i in range(1, 11):
+            row = str((i - 1) // 4 + 1)
+            col = str((i - 1) % 4 + 1)
+            Seat.objects.create(
+                bus=self.bus,
+                seat_number=f"{i:02d}",  # '01', '02', ..., '10'
+                row=row,
+                col=col,
+            )
+
+        initial_seats = list(Seat.objects.filter(bus=self.bus))
+        initial_ids = {s.id for s in initial_seats}
+        self.assertEqual(len(initial_seats), 10)
+
+        # Completar capacidad a 40: debe crear exactamente 30 asientos y totalizar 40
+        result = complete_seats_for_bus(self.bus, target_capacity=40)
+        self.assertEqual(result["existing_seats_count"], 10)
+        self.assertEqual(result["created_seats_count"], 30)
+        self.assertEqual(result["total_seats_count"], 40)
+
+        all_seats = list(Seat.objects.filter(bus=self.bus))
+        self.assertEqual(len(all_seats), 40)
+        # Los IDs iniciales ('01'..'10') se conservaron intactos
+        current_ids = {s.id for s in all_seats}
+        self.assertTrue(initial_ids.issubset(current_ids))
+
+        # Verificar que se crearon '11' a '40'
+        created_numbers = set(result["created_seat_numbers"])
+        expected_created = {str(n) for n in range(11, 41)}
+        self.assertEqual(created_numbers, expected_created)
+
+    def test_canonical_number_matching_with_leading_zeros_capacity_30(self):
+        # Mismo caso pero con capacidad 30: debe crear solo 20 y obtener 30
+        self.bus.capacity = 30
+        self.bus.save()
+
+        for i in range(1, 11):
+            row = str((i - 1) // 4 + 1)
+            col = str((i - 1) % 4 + 1)
+            Seat.objects.create(
+                bus=self.bus,
+                seat_number=f"{i:02d}",
+                row=row,
+                col=col,
+            )
+
+        result = complete_seats_for_bus(self.bus, target_capacity=30)
+        self.assertEqual(result["existing_seats_count"], 10)
+        self.assertEqual(result["created_seats_count"], 20)
+        self.assertEqual(result["total_seats_count"], 30)
+        self.assertEqual(Seat.objects.filter(bus=self.bus).count(), 30)
+
+    def test_inconsistent_plan_with_01_and_1_blocks_completion_and_diagnoses_error(self):
+        # Crear '01' y '1' con diferentes IDs en el mismo bus
+        seat_01 = Seat.objects.create(bus=self.bus, seat_number="01", row="1", col="1")
+        seat_1 = Seat.objects.create(bus=self.bus, seat_number="1", row="1", col="2")
+
+        from DjangoProject1.apps.fleet.services import diagnose_bus_seats, validate_bus_seats_integrity
+        diag = diagnose_bus_seats(self.bus)
+        self.assertTrue(diag["is_inconsistent"])
+        self.assertEqual(len(diag["numeric_duplicates"]), 1)
+        self.assertEqual(diag["numeric_duplicates"][0]["canonical_number"], "1")
+
+        # validate_bus_seats_integrity debe lanzar ValidationError
+        with self.assertRaises(ValidationError):
+            validate_bus_seats_integrity(self.bus)
+
+        # complete_seats_for_bus debe rechazar la operación
+        with self.assertRaises(ValidationError):
+            complete_seats_for_bus(self.bus, target_capacity=40)
+
+    def test_reconciliation_safe_cleanup_unreferenced_duplicate(self):
+        # Crear '01' (con tiquete simulado) y '1' (sin tiquete)
+        seat_01 = Seat.objects.create(bus=self.bus, seat_number="01", row="1", col="1")
+        seat_1 = Seat.objects.create(bus=self.bus, seat_number="1", row="1", col="2")
+
+        # Simular tiquete vinculado a seat_01
+        from DjangoProject1.apps.trips.models import Route, Trip, Stop
+        from DjangoProject1.apps.sales.models import Sale, Ticket
+        from django.contrib.auth import get_user_model
+        from django.utils import timezone
+
+        user = get_user_model().objects.create(username="testaudituser")
+        route = Route.objects.create(name="Ruta Test", base_price=50000)
+        origin = Stop.objects.create(route=route, name="Origen", order=1)
+        dest = Stop.objects.create(route=route, name="Destino", order=2)
+        trip = Trip.objects.create(
+            bus=self.bus,
+            route=route,
+            origin=origin,
+            destination=dest,
+            departure_time=timezone.now(),
+            arrival_time=timezone.now() + timezone.timedelta(hours=2),
+            price=50000,
+        )
+        sale = Sale.objects.create(
+            user=user,
+            trip=trip,
+            seat=seat_01,
+            amount=50000,
+            status=Sale.Status.PAID,
+        )
+        ticket = Ticket.objects.create(
+            sale=sale,
+            trip=trip,
+            seat=seat_01,
+            ticket_number="TK-TEST-001",
+            status=Ticket.Status.ISSUED,
+        )
+
+        from DjangoProject1.apps.fleet.services import reconcile_bus_seats
+        # Dry-run no debe eliminar nada
+        dry_res = reconcile_bus_seats(self.bus, dry_run=True)
+        self.assertTrue(dry_res["dry_run"])
+        self.assertEqual(Seat.objects.filter(bus=self.bus).count(), 2)
+
+        # Ejecución real: elimina el asiento duplicado sin tiquetes (seat_1) y preserva seat_01
+        res = reconcile_bus_seats(self.bus, dry_run=False)
+        self.assertFalse(res["dry_run"])
+        self.assertFalse(res["requires_manual_audit"])
+        self.assertTrue(res["is_consistent_now"])
+
+        self.assertEqual(Seat.objects.filter(bus=self.bus).count(), 1)
+        remaining = Seat.objects.get(bus=self.bus)
+        self.assertEqual(remaining.id, seat_01.id)
+        self.assertEqual(remaining.seat_number, "01")
+
+    def test_reconciliation_requires_manual_audit_if_both_have_active_tickets(self):
+        seat_01 = Seat.objects.create(bus=self.bus, seat_number="01", row="1", col="1")
+        seat_1 = Seat.objects.create(bus=self.bus, seat_number="1", row="1", col="2")
+
+        from DjangoProject1.apps.trips.models import Route, Trip, Stop
+        from DjangoProject1.apps.sales.models import Sale, Ticket
+        from django.contrib.auth import get_user_model
+        from django.utils import timezone
+
+        user = get_user_model().objects.create(username="testaudituser2")
+        route = Route.objects.create(name="Ruta Test 2", base_price=50000)
+        origin = Stop.objects.create(route=route, name="Origen 2", order=1)
+        dest = Stop.objects.create(route=route, name="Destino 2", order=2)
+        trip = Trip.objects.create(
+            bus=self.bus,
+            route=route,
+            origin=origin,
+            destination=dest,
+            departure_time=timezone.now(),
+            arrival_time=timezone.now() + timezone.timedelta(hours=2),
+            price=50000,
+        )
+        for s in (seat_01, seat_1):
+            sale = Sale.objects.create(
+                user=user,
+                trip=trip,
+                seat=s,
+                amount=50000,
+                status=Sale.Status.PAID,
+            )
+            Ticket.objects.create(
+                sale=sale,
+                trip=trip,
+                seat=s,
+                ticket_number=f"TK-{s.seat_number}",
+                status=Ticket.Status.ISSUED,
+            )
+
+        from DjangoProject1.apps.fleet.services import reconcile_bus_seats
+        res = reconcile_bus_seats(self.bus, dry_run=False)
+        # Debe detenerse y exigir auditoría manual sin borrar ninguno
+        self.assertTrue(res["requires_manual_audit"])
+        self.assertEqual(Seat.objects.filter(bus=self.bus).count(), 2)

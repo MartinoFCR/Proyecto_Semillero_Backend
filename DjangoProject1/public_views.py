@@ -1,4 +1,6 @@
+from django.db import connection
 from django.utils import timezone
+from rest_framework import status
 from rest_framework.generics import ListAPIView
 from rest_framework.permissions import AllowAny
 from django.conf import settings
@@ -66,3 +68,27 @@ class CustomerServiceView(APIView):
             "privacy_policy_url": getattr(settings, "PRIVACY_POLICY_URL", None),
             "terms_url": getattr(settings, "TERMS_URL", None),
         })
+
+
+class HealthCheckView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        db_ok = True
+        error_msg = ""
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT 1;")
+        except Exception as exc:
+            db_ok = False
+            error_msg = str(exc)
+
+        payload = {
+            "status": "healthy" if db_ok else "unhealthy",
+            "database": "connected" if db_ok else "disconnected",
+            "server_time": timezone.now(),
+        }
+        if not db_ok:
+            payload["error"] = error_msg
+            return Response(payload, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        return Response(payload, status=status.HTTP_200_OK)

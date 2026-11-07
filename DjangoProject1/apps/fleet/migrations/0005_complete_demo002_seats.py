@@ -1,6 +1,27 @@
 from django.db import migrations
 
 
+def canonical_seat_number(value):
+    cleaned = str(value).strip()
+    if cleaned.isdigit():
+        return str(int(cleaned))
+    return cleaned.lower()
+
+
+def canonical_position(row, col):
+    r_str = str(row).strip()
+    r_canon = str(int(r_str)) if r_str.isdigit() else r_str.lower()
+    c_str = str(col).strip().upper()
+    col_map = {"A": "1", "B": "2", "C": "3", "D": "4"}
+    if c_str in col_map:
+        c_canon = col_map[c_str]
+    elif c_str.isdigit():
+        c_canon = str(int(c_str))
+    else:
+        c_canon = c_str.lower()
+    return (r_canon, c_canon)
+
+
 def complete_demo002_seats(apps, schema_editor):
     Bus = apps.get_model("fleet", "Bus")
     Seat = apps.get_model("fleet", "Seat")
@@ -9,43 +30,42 @@ def complete_demo002_seats(apps, schema_editor):
     if not bus:
         return
 
-    target_capacity = bus.capacity
+    target_capacity = bus.capacity or 30
     columns_per_row = 4
 
     existing_seats = list(Seat.objects.filter(bus=bus))
-    existing_numbers = {str(s.seat_number) for s in existing_seats}
-    occupied_positions = {(str(s.row), str(s.col)) for s in existing_seats}
+    existing_canonical_numbers = {
+        canonical_seat_number(s.seat_number) for s in existing_seats
+    }
+    occupied_positions = {
+        canonical_position(s.row, s.col) for s in existing_seats
+    }
 
-    def get_free_position():
-        r = 1
-        while True:
-            for c in range(1, columns_per_row + 1):
-                pos = (str(r), str(c))
-                if pos not in occupied_positions:
-                    return pos
-            r += 1
+    # Si hay duplicados canónicos existentes, no creamos más para evitar inflar la base
+    if len(existing_canonical_numbers) != len(existing_seats):
+        return
 
     created_seats = []
     for num in range(1, target_capacity + 1):
-        num_str = str(num)
-        if num_str in existing_numbers:
+        c_num = str(num)
+        if c_num in existing_canonical_numbers:
             continue
 
         nat_row = str((num - 1) // columns_per_row + 1)
         nat_col = str((num - 1) % columns_per_row + 1)
+        canon_pos = canonical_position(nat_row, nat_col)
 
-        if (nat_row, nat_col) not in occupied_positions:
-            chosen_row, chosen_col = nat_row, nat_col
-        else:
-            chosen_row, chosen_col = get_free_position()
+        if canon_pos in occupied_positions:
+            # Colisión física: detener para no corromper el plano
+            return
 
-        occupied_positions.add((chosen_row, chosen_col))
+        occupied_positions.add(canon_pos)
         created_seats.append(
             Seat(
                 bus=bus,
-                seat_number=num_str,
-                row=chosen_row,
-                col=chosen_col,
+                seat_number=str(num),
+                row=nat_row,
+                col=nat_col,
             )
         )
 

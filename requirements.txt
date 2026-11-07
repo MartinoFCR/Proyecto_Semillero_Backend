@@ -7,10 +7,11 @@ djangorestframework==3.17.1
 djangorestframework-simplejwt==5.5.1
 drf-spectacular==0.30.0
 GDAL==3.10.0
+gunicorn>=23.0.0
 inflection==0.5.1
 jsonschema==4.26.0
 jsonschema-specifications==2025.9.1
-numpy @ file:///D:/bld/bld/rattler-build_numpy_1788731996/work/dist/numpy-2.5.3-cp312-cp312-win_amd64.whl#sha256=263dfb06243b5db0c5ff5a0ab551c9a12be9b6e1aa4fb6f7c7da6cccc9544d900
+numpy>=2.0.0,<3.0.0
 packaging==26.3
 psycopg==3.3.6
 psycopg-binary==3.3.6

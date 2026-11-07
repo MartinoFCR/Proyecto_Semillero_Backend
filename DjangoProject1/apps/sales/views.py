@@ -483,8 +483,17 @@ class AdminSaleView(APIView):
                         {"detail": "El viaje no tiene una tarifa válida."},
                         status=status.HTTP_400_BAD_REQUEST,
                     )
-                if trip.bus.seats.count() < trip.bus.capacity:
-                    complete_seats_for_bus(trip.bus, trip.bus.capacity)
+                try:
+                    if trip.bus.seats.count() < trip.bus.capacity:
+                        complete_seats_for_bus(trip.bus, trip.bus.capacity)
+                except Exception as exc:
+                    return Response(
+                        {
+                            "code": "seats_plan_inconsistent",
+                            "detail": str(exc),
+                        },
+                        status=status.HTTP_409_CONFLICT,
+                    )
                 seats = list(
                     trip.bus.seats.select_for_update().filter(
                         pk__in=seat_ids,
@@ -843,8 +852,17 @@ class WompiCheckoutView(APIView):
 
         with transaction.atomic():
             User.objects.select_for_update().get(pk=request.user.pk)
-            if trip.bus.seats.count() < trip.bus.capacity:
-                complete_seats_for_bus(trip.bus, trip.bus.capacity)
+            try:
+                if trip.bus.seats.count() < trip.bus.capacity:
+                    complete_seats_for_bus(trip.bus, trip.bus.capacity)
+            except Exception as exc:
+                return Response(
+                    {
+                        "code": "seats_plan_inconsistent",
+                        "detail": str(exc),
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
             seats = list(
                 trip.bus.seats.select_for_update().filter(
                     pk__in=seats_by_id,

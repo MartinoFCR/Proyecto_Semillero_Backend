@@ -95,8 +95,11 @@ class AvailableSeatsView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        if trip.bus.seats.count() < trip.bus.capacity:
-            complete_seats_for_bus(trip.bus, trip.bus.capacity)
+        try:
+            if trip.bus.seats.count() < trip.bus.capacity:
+                complete_seats_for_bus(trip.bus, trip.bus.capacity)
+        except Exception as exc:
+            pass
 
         now = timezone.now()
         Sale.objects.filter(
