@@ -441,3 +441,64 @@ class DriverCreationTests(TestCase):
             expected_col = str(((num - 1) % 4) + 1)
             self.assertEqual(seat.row, expected_row, f"Fila incorrecta en silla {num}")
             self.assertEqual(seat.col, expected_col, f"Columna incorrecta en silla {num}")
+
+
+class GPSDeviceModelAndAPITests(TestCase):
+    def setUp(self):
+        from django.contrib.auth import get_user_model
+        self.admin = get_user_model().objects.create_user(
+            username="admin_gps_test",
+            email="admin_gps@example.com",
+            role="admin",
+            identification_number="888001122",
+        )
+        self.bus = Bus.objects.create(
+            plate="BUS-GPS-01",
+            capacity=30,
+            model="2024",
+            state=Bus.State.ACTIVE,
+        )
+
+    def test_create_and_assign_gps_device(self):
+        from DjangoProject1.apps.fleet.models import GPSDevice
+        from DjangoProject1.apps.fleet.serializers import GPSDeviceSerializer
+
+        data = {
+            "name": "ESP32-Prueba-01",
+            "device_id": "ESP32_AABBCCDDEE",
+            "model": "ESP32-WROOM",
+            "state": "active",
+            "bus": self.bus.id,
+        }
+        serializer = GPSDeviceSerializer(data=data)
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        device = serializer.save()
+
+        self.assertEqual(device.bus.id, self.bus.id)
+        self.assertEqual(serializer.data["bus_plate"], "BUS-GPS-01")
+
+        # Refrescar bus y verificar que el bus reconoce el dispositivo asignado
+        self.bus.refresh_from_db()
+        self.assertEqual(self.bus.gps_device.id, device.id)
+
+    def test_assign_device_via_bus_action(self):
+        from django.test import RequestFactory
+        from DjangoProject1.apps.fleet.models import GPSDevice
+        from DjangoProject1.apps.fleet.views import BusViewSet
+
+        device = GPSDevice.objects.create(
+            name="ESP32-Libre",
+            device_id="ESP32_FREE_01",
+            state=GPSDevice.State.ACTIVE,
+        )
+        self.assertIsNone(device.bus)
+
+        rf = RequestFactory()
+        view = BusViewSet.as_view({"post": "assign_device"})
+        req = rf.post(f"/api/fleet/buses/{self.bus.id}/assign-device/", {"device_id": device.id}, content_type="application/json")
+        req.user = self.admin
+        resp = view(req, pk=self.bus.id)
+
+        self.assertEqual(resp.status_code, 200)
+        device.refresh_from_db()
+        self.assertEqual(device.bus.id, self.bus.id)

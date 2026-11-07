@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from DjangoProject1.apps.fleet.models import Bus, BusType, Driver, Seat
+from DjangoProject1.apps.fleet.models import Bus, BusType, Driver, GPSDevice, Seat
 
 
 class BusTypeSerializer(serializers.ModelSerializer):
@@ -17,18 +17,30 @@ class BusTypeSerializer(serializers.ModelSerializer):
         return value
 
 
+class GPSDeviceSummarySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = GPSDevice
+        fields = ("id", "name", "device_id", "model", "state", "last_ping_at")
+        read_only_fields = fields
+
+
 class BusSerializer(serializers.ModelSerializer):
     bus_type_detail = BusTypeSerializer(source="bus_type", read_only=True)
+    gps_device_detail = GPSDeviceSummarySerializer(source="gps_device", read_only=True)
 
     class Meta:
         model = Bus
         fields = "__all__"
-        extra_fields = ("bus_type_detail",)
+        extra_fields = ("bus_type_detail", "gps_device_detail")
 
     def get_fields(self):
         fields = super().get_fields()
         fields["bus_type_detail"] = BusTypeSerializer(
             source="bus_type",
+            read_only=True,
+        )
+        fields["gps_device_detail"] = GPSDeviceSummarySerializer(
+            source="gps_device",
             read_only=True,
         )
         return fields
@@ -92,3 +104,47 @@ class SeatSerializer(serializers.ModelSerializer):
     class Meta:
         model = Seat
         fields = "__all__"
+
+
+class GPSDeviceSerializer(serializers.ModelSerializer):
+    bus_plate = serializers.CharField(source="bus.plate", read_only=True)
+
+    class Meta:
+        model = GPSDevice
+        fields = (
+            "id",
+            "name",
+            "device_id",
+            "model",
+            "state",
+            "api_key",
+            "bus",
+            "bus_plate",
+            "last_ping_at",
+            "created_at",
+            "updated_at",
+        )
+        read_only_fields = ("id", "bus_plate", "last_ping_at", "created_at", "updated_at")
+
+    def validate_device_id(self, value):
+        val = value.strip()
+        if not val:
+            raise serializers.ValidationError("El identificador del dispositivo (device_id) es obligatorio.")
+        qs = GPSDevice.objects.filter(device_id__iexact=val)
+        if self.instance:
+            qs = qs.exclude(pk=self.instance.pk)
+        if qs.exists():
+            raise serializers.ValidationError(f"Ya existe un dispositivo registrado con el device_id '{val}'.")
+        return val
+
+    def validate_bus(self, bus):
+        if bus:
+            qs = GPSDevice.objects.filter(bus=bus)
+            if self.instance:
+                qs = qs.exclude(pk=self.instance.pk)
+            if qs.exists():
+                existing = qs.first()
+                raise serializers.ValidationError(
+                    f"El bus '{bus.plate}' ya tiene asignado el dispositivo '{existing.name}' ({existing.device_id})."
+                )
+        return bus

@@ -144,3 +144,65 @@ class TripValidationAndScheduleTests(TestCase):
         self.assertEqual(serializer.data["fare_amount_cents"], 7500000)
         self.assertEqual(serializer.data["bus_plate"], "BUS-ACT-01")
         self.assertEqual(serializer.data["driver_name"], "Driver Operativo 1")
+
+    def test_telemetry_ingest_updates_reading_and_seats(self):
+        from DjangoProject1.apps.fleet.models import GPSDevice, Seat
+        from DjangoProject1.apps.trips.models import CurrentSeatState, Reading, SeatsStateRecord
+        from DjangoProject1.apps.trips.telemetry_services import ingest_device_telemetry
+
+        # Crear viaje en progreso
+        trip = Trip.objects.create(
+            bus=self.bus_active,
+            driver=self.driver_active,
+            route=self.route,
+            date_time_start=timezone.now(),
+            trip_state=Trip.TripState.IN_PROGRESS,
+        )
+
+        # Crear sillas 1 y 2 en el bus
+        seat_1 = Seat.objects.create(bus=self.bus_active, seat_number="1", row="1", col="1")
+        seat_2 = Seat.objects.create(bus=self.bus_active, seat_number="2", row="1", col="2")
+
+        # Crear y asignar dispositivo GPS
+        device = GPSDevice.objects.create(
+            name="ESP32-Ruta-Valle",
+            device_id="ESP32_TELEMETRY_01",
+            bus=self.bus_active,
+            state=GPSDevice.State.ACTIVE,
+        )
+
+        payload = {
+            "device_id": "ESP32_TELEMETRY_01",
+            "timestamp": "2026-11-06T22:00:00Z",
+            "gps": {
+                "lat": 3.4516,
+                "lng": -76.5320,
+                "speed": 62.5,
+                "fuel_level": 80.0,
+            },
+            "seats": [
+                {"seat": "1", "occupied": True},
+                {"seat": "2", "occupied": False},
+            ],
+        }
+
+        result = ingest_device_telemetry(payload)
+        self.assertEqual(result["status"], "processed")
+        self.assertEqual(result["active_trip_id"], trip.id)
+        self.assertEqual(result["readings_created"], 1)
+
+        # Verificar Reading creado
+        reading = Reading.objects.filter(trip=trip).first()
+        self.assertIsNotNone(reading)
+        self.assertEqual(reading.speed, 62.5)
+        self.assertEqual(reading.fuel_level, 80.0)
+
+        # Verificar CurrentSeatState
+        state_1 = CurrentSeatState.objects.get(trip=trip, seat=seat_1)
+        state_2 = CurrentSeatState.objects.get(trip=trip, seat=seat_2)
+        self.assertTrue(state_1.occupied)
+        self.assertFalse(state_2.occupied)
+
+        # Verificar que el ping del dispositivo se actualizó
+        device.refresh_from_db()
+        self.assertIsNotNone(device.last_ping_at)

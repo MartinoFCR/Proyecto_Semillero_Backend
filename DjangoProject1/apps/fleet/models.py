@@ -57,6 +57,40 @@ class Driver(models.Model):
         verbose_name_plural = 'Conductores'
         verbose_name = 'Conductor'
 
+
+class GPSDevice(models.Model):
+    class State(models.TextChoices):
+        ACTIVE = 'active', 'Activo'
+        INACTIVE = 'inactive', 'Inactivo'
+        MAINTENANCE = 'maintenance', 'En mantenimiento'
+
+    name = models.CharField(max_length=80, help_text="Nombre o alias identificador del dispositivo (ej. ESP32-Bus-01).")
+    device_id = models.CharField(max_length=60, unique=True, help_text="Identificador único del microcontrolador (ej. MAC o ID MQTT).")
+    model = models.CharField(max_length=60, blank=True, default="ESP32", help_text="Modelo de placa o microcontrolador.")
+    state = models.CharField(max_length=20, choices=State.choices, default=State.ACTIVE)
+    api_key = models.CharField(max_length=64, blank=True, default="", help_text="Token o clave secreta del dispositivo.")
+    bus = models.OneToOneField(
+        Bus,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="gps_device",
+        help_text="Bus al que está asignado actualmente este dispositivo.",
+    )
+    last_ping_at = models.DateTimeField(null=True, blank=True, help_text="Última fecha y hora en la que reportó señal.")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'Dispositivo GPS'
+        verbose_name_plural = 'Dispositivos GPS'
+        ordering = ['id']
+
+    def __str__(self):
+        bus_str = f" (Bus: {self.bus.plate})" if self.bus else " (Disponible)"
+        return f"{self.name} - {self.device_id}{bus_str}"
+
+
 class Seat(models.Model):
     bus = models.ForeignKey(
         Bus,

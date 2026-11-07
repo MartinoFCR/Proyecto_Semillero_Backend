@@ -611,6 +611,76 @@ El conductor se registra únicamente con sus datos laborales/operativos. No requ
 
 *Nota:* Si un conductor desea comprar una boleta de viaje, lo hace como cualquier cliente común y corriente desde la plataforma pública registrándose con su cuenta de cliente, sin mezclar sus datos de chofer.
 
+### Dispositivos GPS / Telemática IoT (ESP32)
+
+Permite registrar el inventario de microcontroladores/dispositivos GPS y asignarlos o desvincularlos de los buses.
+
+```text
+GET    /api/fleet/devices/
+GET    /api/fleet/devices/?available={true|false}
+GET    /api/fleet/devices/?state={active|inactive|maintenance}
+GET    /api/fleet/devices/?search={texto}
+POST   /api/fleet/devices/
+GET    /api/fleet/devices/{id}/
+PUT    /api/fleet/devices/{id}/
+PATCH  /api/fleet/devices/{id}/
+DELETE /api/fleet/devices/{id}/
+POST   /api/fleet/devices/{id}/assign/
+POST   /api/fleet/devices/{id}/unassign/
+```
+
+- Crear un dispositivo GPS / ESP32:
+```json
+{
+  "name": "ESP32-Bus-01",
+  "device_id": "ESP32_BUS_001",
+  "model": "ESP32-WROOM",
+  "state": "active",
+  "bus": 1
+}
+```
+*(El campo `bus` es opcional; si no se envía, el dispositivo queda disponible en bodega/inventario).*
+
+- Asignar a un bus: `POST /api/fleet/devices/{id}/assign/` con cuerpo `{"bus": 2}`.
+- Desvincular de un bus: `POST /api/fleet/devices/{id}/unassign/` (deja el dispositivo libre para otro bus).
+- También se puede asignar/desvincular desde el bus:
+  - `POST /api/fleet/buses/{id}/assign-device/` con `{"device_id": 3}`.
+  - `POST /api/fleet/buses/{id}/remove-device/`.
+
+### Ingesta de Telemetría (GPS + Sensores de Asientos)
+
+Endpoint utilizado por el ESP32 o el worker MQTT para reportar la ubicación satelital y el estado de ocupación de las sillas en vivo:
+
+```text
+POST   /api/trips/telemetry/ingest/
+```
+
+Cuerpo de la solicitud (Payload emitido por el microcontrolador):
+
+```json
+{
+  "device_id": "ESP32_BUS_001",
+  "timestamp": "2026-11-06T21:45:00Z",
+  "gps": {
+    "lat": 6.2442,
+    "lng": -75.5812,
+    "speed": 55.0,
+    "fuel_level": 78.5
+  },
+  "seats": [
+    {"seat": "1", "occupied": true},
+    {"seat": "2", "occupied": false},
+    {"seat": "3", "occupied": false},
+    {"seat": "4", "occupied": true}
+  ]
+}
+```
+
+*Lógica del servidor:*
+1. Identifica el bus al que está asignado `device_id`.
+2. Actualiza `last_ping_at` del dispositivo.
+3. Si el bus tiene un viaje activo (`scheduled` o `in_progress`), almacena la coordenada en `Reading` y actualiza la ocupación de cada silla en `CurrentSeatState` y `SeatsStateRecord`.
+
 ### Sillas
 
 ```text

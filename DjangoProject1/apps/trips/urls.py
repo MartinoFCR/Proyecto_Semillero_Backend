@@ -8,6 +8,7 @@ from DjangoProject1.apps.trips.views import (
     EventViewSet,
     CurrentSeatStateViewSet,
     SeatsStateRecordViewSet,
+    TelemetryIngestView,
 )
 
 router = DefaultRouter()
@@ -37,5 +38,10 @@ urlpatterns += [
         "trips/<int:trip_id>/seats/",
         AvailableSeatsView.as_view(),
         name="trip-seats",
+    ),
+    path(
+        "telemetry/ingest/",
+        TelemetryIngestView.as_view(),
+        name="telemetry-ingest",
     ),
 ]

@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import Bus, BusType, Driver, Seat
+from .models import Bus, BusType, Driver, GPSDevice, Seat
 
 
 @admin.register(BusType)
@@ -20,6 +20,13 @@ class BusAdmin(admin.ModelAdmin):
 class DriverAdmin(admin.ModelAdmin):
     list_display = ("id", "full_name", "license_number")
     search_fields = ("full_name", "license_number")
+
+
+@admin.register(GPSDevice)
+class GPSDeviceAdmin(admin.ModelAdmin):
+    list_display = ("id", "name", "device_id", "bus", "state", "last_ping_at")
+    search_fields = ("name", "device_id")
+    list_filter = ("state",)
 
 
 @admin.register(Seat)

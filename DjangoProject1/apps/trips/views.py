@@ -303,3 +303,34 @@ class SeatsStateRecordViewSet(ReadOnlyModelViewSet):
             return queryset.none()
 
         return queryset.filter(trip__driver=driver_profile)
+
+
+class TelemetryIngestView(APIView):
+    """Endpoint HTTP para recibir telemetría de dispositivos GPS/ESP32.
+
+    Permite tanto el puente desde un broker MQTT como pruebas directas de ingesta.
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        from django.core.exceptions import ValidationError as DjangoValidationError
+        from DjangoProject1.apps.trips.telemetry_services import ingest_device_telemetry
+
+        data = request.data
+        if not isinstance(data, dict):
+            return Response(
+                {"detail": "El cuerpo de la solicitud debe ser un objeto JSON."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            result = ingest_device_telemetry(data)
+            return Response(result, status=status.HTTP_200_OK)
+        except DjangoValidationError as exc:
+            msg = exc.message_dict if hasattr(exc, "message_dict") else exc.messages
+            return Response(msg, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as exc:
+            return Response(
+                {"detail": f"Error al procesar telemetría: {str(exc)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
