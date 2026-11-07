@@ -63,7 +63,8 @@ class TripFare(models.Model):
 
 class Reading(models.Model):
     trip = models.ForeignKey(Trip, on_delete=models.CASCADE, null=False)
-    time_stamp = models.DateTimeField(default=timezone.now)
+    time_stamp = models.DateTimeField(default=timezone.now, help_text="Timestamp original del sensor/GPS del ESP32")
+    created_at = models.DateTimeField(auto_now_add=True, help_text="Timestamp de recepción en el servidor")
     speed = models.DecimalField(
         max_digits=6,
         decimal_places=2
@@ -125,5 +126,6 @@ class CurrentSeatState(models.Model):
 class SeatsStateRecord(models.Model):
     trip = models.ForeignKey(Trip, on_delete=models.PROTECT, null=False)
     seat = models.ForeignKey(Seat, on_delete=models.PROTECT, null=False)
-    time_stamp = models.DateTimeField(default=timezone.now)
+    time_stamp = models.DateTimeField(default=timezone.now, help_text="Timestamp original del sensor/GPS del ESP32")
+    created_at = models.DateTimeField(auto_now_add=True, help_text="Timestamp de recepción en el servidor")
     occupied = models.BooleanField(default=False)
