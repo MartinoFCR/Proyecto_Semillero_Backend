@@ -35,13 +35,11 @@ from DjangoProject1.permissions import (
 
 class TripViewSet(ModelViewSet):
     serializer_class = TripSerializer
-    permission_classes = [IsAdminOrAssignedDriverReadOnly]
+    permission_classes = [IsAdminOrReadOnly]
 
     def get_permissions(self):
         if self.request.method in {"POST", "PUT", "PATCH", "DELETE"}:
             return [IsAdminRole()]
-        if getattr(self.request.user, "role", None) == "client":
-            return [IsAuthenticated()]
         return super().get_permissions()
 
     def get_queryset(self):
@@ -51,26 +49,35 @@ class TripViewSet(ModelViewSet):
             "route",
             "route__origin",
             "route__destination",
-        )
+            "fare",
+        ).order_by("-date_time_start", "id")
 
-        if self.request.user.role == "admin":
-            return queryset.all()
+        user_role = getattr(self.request.user, "role", None)
 
-        if self.request.user.role == "client":
-            return queryset.filter(
+        if user_role == "client":
+            queryset = queryset.filter(
                 trip_state=Trip.TripState.SCHEDULED,
             )
 
-        driver_profile = getattr(
-            self.request.user,
-            "driver_profile",
-            None,
-        )
+        # Filtros administrativos y de consulta
+        route_id = self.request.query_params.get("route")
+        bus_id = self.request.query_params.get("bus")
+        driver_id = self.request.query_params.get("driver")
+        state = self.request.query_params.get("state")
+        date_str = self.request.query_params.get("date")
 
-        if driver_profile is None:
-            return queryset.none()
+        if route_id:
+            queryset = queryset.filter(route_id=route_id)
+        if bus_id:
+            queryset = queryset.filter(bus_id=bus_id)
+        if driver_id:
+            queryset = queryset.filter(driver_id=driver_id)
+        if state:
+            queryset = queryset.filter(trip_state=state)
+        if date_str:
+            queryset = queryset.filter(date_time_start__date=date_str)
 
-        return queryset.filter(driver=driver_profile)
+        return queryset
 
 
 class TripFareViewSet(ModelViewSet):

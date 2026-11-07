@@ -1,5 +1,7 @@
+from django.db import transaction
 from rest_framework import serializers
 
+from DjangoProject1.apps.fleet.models import Bus
 from DjangoProject1.apps.trips.models import (
     CurrentSeatState,
     Event,
@@ -13,7 +15,10 @@ from DjangoProject1.serializers import GeoJSONPointField
 
 
 class TripSerializer(serializers.ModelSerializer):
-    fare_amount_cents = serializers.SerializerMethodField()
+    fare_amount_cents = serializers.IntegerField(
+        required=False,
+        allow_null=True,
+    )
     origin = serializers.CharField(source="route.origin.place_name", read_only=True)
     destination = serializers.CharField(
         source="route.destination.place_name",
@@ -27,9 +32,16 @@ class TripSerializer(serializers.ModelSerializer):
         fields = "__all__"
         read_only_fields = ("id",)
 
-    def get_fare_amount_cents(self, obj):
-        fare = getattr(obj, "fare", None)
-        return fare.amount_cents if fare else None
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        fare = getattr(instance, "fare", None)
+        data["fare_amount_cents"] = fare.amount_cents if fare else None
+        return data
+
+    def validate_fare_amount_cents(self, value):
+        if value is not None and value <= 0:
+            raise serializers.ValidationError("La tarifa del viaje debe ser mayor que cero.")
+        return value
 
     def validate(self, attrs):
         instance = self.instance
@@ -68,7 +80,41 @@ class TripSerializer(serializers.ModelSerializer):
                     "El odómetro final no puede ser inferior al inicial."
             })
 
-        # Validación de solapamiento de horario para el conductor
+        # 1. Validación del Bus (Estado activo y no solapamiento)
+        bus = attrs.get("bus", instance.bus if instance else None)
+        if bus:
+            if bus.state != Bus.State.ACTIVE:
+                raise serializers.ValidationError({
+                    "bus": f"El bus '{bus.plate}' no está activo (estado actual: '{bus.state}')."
+                })
+
+            if start:
+                overlapping_bus_trips = Trip.objects.filter(
+                    bus=bus,
+                    trip_state__in=[Trip.TripState.SCHEDULED, Trip.TripState.IN_PROGRESS],
+                )
+                if instance:
+                    overlapping_bus_trips = overlapping_bus_trips.exclude(pk=instance.pk)
+
+                if end:
+                    overlapping_bus_trips = overlapping_bus_trips.filter(
+                        date_time_start__lt=end,
+                        date_time_end__gt=start,
+                    )
+                else:
+                    overlapping_bus_trips = overlapping_bus_trips.filter(
+                        date_time_start=start,
+                    )
+
+                if overlapping_bus_trips.exists():
+                    raise serializers.ValidationError({
+                        "bus": (
+                            f"El bus '{bus.plate}' ya tiene asignado otro viaje activo "
+                            f"en este mismo horario."
+                        )
+                    })
+
+        # 2. Validación de solapamiento de horario para el conductor
         driver = attrs.get("driver", instance.driver if instance else None)
         if driver:
             if not driver.is_active:
@@ -77,9 +123,6 @@ class TripSerializer(serializers.ModelSerializer):
                 })
 
             if start:
-                # Buscar viajes del mismo conductor que se solapen
-                # Si tiene date_time_end, se solapa si el rango se cruza.
-                # Si no tiene date_time_end aún, se compara la misma salida exacta.
                 overlapping_trips = Trip.objects.filter(
                     driver=driver,
                     trip_state__in=[Trip.TripState.SCHEDULED, Trip.TripState.IN_PROGRESS],
@@ -88,7 +131,6 @@ class TripSerializer(serializers.ModelSerializer):
                     overlapping_trips = overlapping_trips.exclude(pk=instance.pk)
 
                 if end:
-                    # Caso rango completo: inicio < otro.fin y fin > otro.inicio
                     overlapping_trips = overlapping_trips.filter(
                         date_time_start__lt=end,
                         date_time_end__gt=start,
@@ -107,6 +149,28 @@ class TripSerializer(serializers.ModelSerializer):
                     })
 
         return attrs
+
+    def create(self, validated_data):
+        fare_cents = validated_data.pop("fare_amount_cents", None)
+        with transaction.atomic():
+            trip = super().create(validated_data)
+            if fare_cents is not None:
+                TripFare.objects.update_or_create(
+                    trip=trip,
+                    defaults={"amount_cents": fare_cents},
+                )
+            return trip
+
+    def update(self, instance, validated_data):
+        fare_cents = validated_data.pop("fare_amount_cents", None)
+        with transaction.atomic():
+            trip = super().update(instance, validated_data)
+            if fare_cents is not None:
+                TripFare.objects.update_or_create(
+                    trip=trip,
+                    defaults={"amount_cents": fare_cents},
+                )
+            return trip
 
 
 class TripFareSerializer(serializers.ModelSerializer):

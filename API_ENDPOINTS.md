@@ -715,6 +715,9 @@ para administradores.
 
 ```text
 GET    /api/routes/routes/
+GET    /api/routes/routes/?search={ciudad_o_lugar}
+GET    /api/routes/routes/?origin={place_id}
+GET    /api/routes/routes/?destination={place_id}
 POST   /api/routes/routes/
 GET    /api/routes/routes/{id}/
 PUT    /api/routes/routes/{id}/
@@ -732,16 +735,26 @@ Crear una ruta:
 }
 ```
 
+*Validaciones:*
+- `origin` y `destination` no pueden ser el mismo lugar.
+- No se permiten duplicados del mismo par origen-destino.
+- `distance_km` debe ser estrictamente mayor a 0.
+- La respuesta incluye los nombres descriptivos de apoyo (`origin_name`, `destination_name`, `origin_city`, `destination_city`).
+
 ## 8. Viajes y tarifas
 
 ### Viajes
 
-Los administradores pueden crear y modificar viajes. Los usuarios
-autenticados pueden consultarlos; un conductor solo puede consultar los
-viajes que tiene asignados.
+Los administradores pueden crear y modificar viajes. Todos los usuarios
+autenticados pueden consultarlos.
 
 ```text
 GET    /api/trips/trips/
+GET    /api/trips/trips/?route={route_id}
+GET    /api/trips/trips/?bus={bus_id}
+GET    /api/trips/trips/?driver={driver_id}
+GET    /api/trips/trips/?state={scheduled|in_progress|completed|cancelled}
+GET    /api/trips/trips/?date={YYYY-MM-DD}
 POST   /api/trips/trips/
 GET    /api/trips/trips/{id}/
 PUT    /api/trips/trips/{id}/
@@ -749,7 +762,7 @@ PATCH  /api/trips/trips/{id}/
 DELETE /api/trips/trips/{id}/
 ```
 
-Crear un viaje:
+Crear un viaje (permite tarifa integrada `fare_amount_cents` en un solo paso):
 
 ```json
 {
@@ -757,7 +770,8 @@ Crear un viaje:
   "driver": 2,
   "route": 3,
   "date_time_start": "2026-10-25T08:00:00-05:00",
-  "date_time_end": null,
+  "date_time_end": "2026-10-25T14:00:00-05:00",
+  "fare_amount_cents": 5000000,
   "fuel_start": null,
   "fuel_end": null,
   "odometer_start": null,
@@ -766,6 +780,13 @@ Crear un viaje:
   "trip_state": "scheduled"
 }
 ```
+
+*Validaciones clave:*
+- **Estado del Bus:** El bus asignado debe estar activo (`state: "Active"`).
+- **No solapamiento de Bus:** El bus no puede tener otro viaje activo (`scheduled` o `in_progress`) en el mismo rango de fecha y hora.
+- **No solapamiento de Conductor:** El conductor no puede tener otro viaje activo en el mismo rango de fecha y hora.
+- **Conductor activo:** El conductor no puede tener `is_active: false`.
+- **Campos descriptivos en respuesta:** Incluye `bus_plate`, `driver_name`, `origin`, `destination` y `fare_amount_cents`.
 
 Estados: `scheduled`, `in_progress`, `completed` y `cancelled`.
 
