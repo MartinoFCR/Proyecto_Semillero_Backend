@@ -46,11 +46,16 @@ class UserViewSet(ModelViewSet):
 
 
 class AdminUserViewSet(ModelViewSet):
-    """Gestión de usuarios administradores (exclusivo para usuarios con rol 'admin')."""
+    """Gestión de usuarios administradores (exclusivo para usuarios con rol 'admin').
+
+    No permite eliminación física (DELETE deshabilitado) para conservar la trazabilidad
+    y auditoría de acciones operativas; en su lugar permite activar o desactivar cuentas
+    mediante PATCH/PUT sobre `is_active` o con las acciones `/deactivate/` y `/activate/`.
+    """
 
     serializer_class = AdminUserSerializer
     permission_classes = [IsAdminRole]
-    http_method_names = ["get", "post", "put", "patch", "delete", "head", "options"]
+    http_method_names = ["get", "post", "put", "patch", "head", "options"]
 
     def get_queryset(self):
         queryset = User.objects.filter(role=User.Role.ADMIN).order_by("id")
@@ -72,20 +77,32 @@ class AdminUserViewSet(ModelViewSet):
                 queryset = queryset.filter(is_active=False)
         return queryset
 
-    def destroy(self, request, *args, **kwargs):
-        instance = self.get_object()
+    def _validate_can_deactivate(self, request, instance):
         if instance.pk == request.user.pk:
             return Response(
-                {"detail": "No puedes eliminar o desactivar tu propia cuenta de administrador."},
+                {"detail": "No puedes desactivar tu propia cuenta de administrador."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        active_admins = User.objects.filter(role=User.Role.ADMIN, is_active=True).exclude(pk=instance.pk).count()
+        active_admins = (
+            User.objects.filter(role=User.Role.ADMIN, is_active=True)
+            .exclude(pk=instance.pk)
+            .count()
+        )
         if active_admins == 0:
             return Response(
-                {"detail": "No se puede eliminar al único administrador activo del sistema."},
+                {"detail": "No se puede desactivar al único administrador activo del sistema."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        return super().destroy(request, *args, **kwargs)
+        return None
+
+    def update(self, request, *args, **kwargs):
+        instance = self.get_object()
+        is_active_param = request.data.get("is_active")
+        if is_active_param in {False, "false", "False", "0", 0}:
+            error_response = self._validate_can_deactivate(request, instance)
+            if error_response is not None:
+                return error_response
+        return super().update(request, *args, **kwargs)
 
 
 class CustomerSearchView(APIView):

@@ -531,8 +531,9 @@ POST   /api/accounts/admins/
 GET    /api/accounts/admins/{id}/
 PUT    /api/accounts/admins/{id}/
 PATCH  /api/accounts/admins/{id}/
-DELETE /api/accounts/admins/{id}/
 ```
+
+> **Nota sobre eliminación (`DELETE`):** Los usuarios administradores **no se pueden eliminar** (`405 Method Not Allowed`) para preservar la trazabilidad e integridad histórica (viajes cancelados, finalizados, postergados o errores resueltos por ese operador). Para retirar el acceso a un administrador, se debe **desactivar** enviando `PATCH /api/accounts/admins/{id}/` con `{"is_active": false}`.
 
 #### Crear un usuario administrador (`POST /api/accounts/admins/`)
 
@@ -556,9 +557,10 @@ Acepta `first_name` y `last_name` por separado, o `name` con el nombre completo:
   - Si se envía, se valida con las políticas de seguridad de Django y la cuenta queda lista con `password_change_required: false`.
   - Si no se envía (o se envía vacío), la contraseña inicial será el `identification_number` y quedará con `password_change_required: true`.
 - **`role`**: El backend fuerza siempre `role = "admin"` e `is_staff = True`.
-- **Protecciones de seguridad en `DELETE /api/accounts/admins/{id}/`**:
-  - Un administrador no puede eliminar su propia cuenta en sesión (`400 Bad Request`).
-  - No se permite eliminar al último administrador activo del sistema (`400 Bad Request`).
+- **Activar / Desactivar un administrador (`PATCH /api/accounts/admins/{id}/`)**:
+  - Enviar `{"is_active": false}` para desactivar o `{"is_active": true}` para reactivar.
+  - Un administrador no puede desactivar su propia cuenta en sesión (`400 Bad Request`).
+  - No se permite desactivar al último administrador activo del sistema (`400 Bad Request`).
 
 ## 5. Flota
 

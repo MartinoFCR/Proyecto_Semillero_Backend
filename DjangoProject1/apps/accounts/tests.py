@@ -278,6 +278,24 @@ class ClientProfileTests(APITestCase):
         laura = user_model.objects.get(pk=create_default_pw.data["id"])
         self.assertTrue(laura.check_password("800000003"))
 
-        # No puede eliminarse a sí mismo
-        self_delete = self.client.delete(f"/api/accounts/admins/{existing_admin.id}/")
-        self.assertEqual(self_delete.status_code, 400)
+        # No se permite eliminar administradores (405 Method Not Allowed)
+        delete_attempt = self.client.delete(f"/api/accounts/admins/{laura.id}/")
+        self.assertEqual(delete_attempt.status_code, 405)
+
+        # No puede desactivarse a sí mismo
+        self_deactivate = self.client.patch(
+            f"/api/accounts/admins/{existing_admin.id}/",
+            {"is_active": False},
+            format="json",
+        )
+        self.assertEqual(self_deactivate.status_code, 400)
+
+        # Sí puede desactivar a otro administrador mediante PATCH is_active=False
+        deactivate_laura = self.client.patch(
+            f"/api/accounts/admins/{laura.id}/",
+            {"is_active": False},
+            format="json",
+        )
+        self.assertEqual(deactivate_laura.status_code, 200)
+        laura.refresh_from_db()
+        self.assertFalse(laura.is_active)
