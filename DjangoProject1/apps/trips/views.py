@@ -35,10 +35,12 @@ from DjangoProject1.apps.trips.serializers import (
 )
 from DjangoProject1.permissions import (
     IsAdminRole,
+    IsAdminOrDispatcherRole,
     IsAdminOrReadOnly,
     IsAdminOrAssignedDriverReadOnly,
     IsAdminOrAssignedDriver,
 )
+from DjangoProject1.apps.support.audit import build_att_signature, log_audit_event
 
 
 class TripViewSet(ModelViewSet):
@@ -46,14 +48,20 @@ class TripViewSet(ModelViewSet):
     permission_classes = [IsAdminOrReadOnly]
 
     def get_permissions(self):
+        if getattr(self, "action", None) in {"complete_trip", "audit_trail"}:
+            return [IsAuthenticated()]
+        if getattr(self, "action", None) in {"cancel_trip", "postpone_trip"}:
+            return [IsAdminOrDispatcherRole()]
         if self.request.method in {"POST", "PUT", "PATCH", "DELETE"}:
-            return [IsAdminRole()]
+            return [IsAdminOrDispatcherRole()]
         return super().get_permissions()
 
     def get_queryset(self):
         queryset = Trip.objects.select_related(
             "bus",
             "driver",
+            "driver__user",
+            "manual_operator",
             "route",
             "route__origin",
             "route__destination",
@@ -66,6 +74,17 @@ class TripViewSet(ModelViewSet):
             queryset = queryset.filter(
                 trip_state=Trip.TripState.SCHEDULED,
             )
+        elif user_role == "driver":
+            # El conductor solo ve los viajes que tiene asignados a su ficha
+            driver_profile = getattr(self.request.user, "driver_profile", None)
+            if driver_profile is not None:
+                queryset = queryset.filter(driver=driver_profile)
+            else:
+                queryset = queryset.filter(
+                    driver__license_number__iexact=getattr(
+                        self.request.user, "identification_number", ""
+                    )
+                )
 
         # Filtros administrativos y de consulta
         route_id = self.request.query_params.get("route")
@@ -87,7 +106,30 @@ class TripViewSet(ModelViewSet):
 
         return queryset
 
-    @action(detail=True, methods=["post"], url_path="cancel", permission_classes=[IsAdminRole])
+    def perform_create(self, serializer):
+        trip = serializer.save()
+        sig = build_att_signature(self.request.user)
+        log_audit_event(
+            request=self.request,
+            module="trips",
+            action="TRIP_CREATED",
+            target_model="Trip",
+            target_id=trip.id,
+            summary=(
+                f"Viaje #{trip.id} programado ({trip.route.origin.place_name} -> "
+                f"{trip.route.destination.place_name}) con bus {trip.bus.plate} y "
+                f"conductor {trip.driver.full_name} — {sig}"
+            ),
+            new_data={
+                "trip_id": trip.id,
+                "bus_plate": trip.bus.plate,
+                "driver_name": trip.driver.full_name,
+                "date_time_start": trip.date_time_start.isoformat() if trip.date_time_start else None,
+                "trip_state": trip.trip_state,
+            },
+        )
+
+    @action(detail=True, methods=["post"], url_path="cancel", permission_classes=[IsAdminOrDispatcherRole])
     def cancel_trip(self, request, pk=None):
         """Cancela un viaje manualmente. Cierra ventas de inmediato y registra motivo y operador."""
         trip = self.get_object()
@@ -104,6 +146,7 @@ class TripViewSet(ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        prev_state = trip.trip_state
         now = get_server_now()
         trip.trip_state = Trip.TripState.CANCELLED
         trip.state_source = "manual"
@@ -118,18 +161,55 @@ class TripViewSet(ModelViewSet):
             "cancellation_reason",
         ])
 
+        sig = build_att_signature(request.user)
+        summary = f"Este viaje #{trip.id} fue cancelado (Motivo: {reason}) — {sig}"
+        log_audit_event(
+            request=request,
+            module="trips",
+            action="TRIP_CANCELLED",
+            target_model="Trip",
+            target_id=trip.id,
+            summary=summary,
+            previous_data={"trip_state": prev_state},
+            new_data={"trip_state": trip.trip_state, "reason": reason},
+        )
+
         return Response(
             {
-                "detail": f"Viaje #{trip.id} cancelado exitosamente.",
+                "detail": summary,
                 "trip": self.get_serializer(trip).data,
             },
             status=status.HTTP_200_OK,
         )
 
-    @action(detail=True, methods=["post"], url_path="complete", permission_classes=[IsAdminRole])
+    @action(detail=True, methods=["post"], url_path="complete", permission_classes=[IsAuthenticated])
     def complete_trip(self, request, pk=None):
-        """Finaliza un viaje manualmente antes de lo programado. Cierra ventas de inmediato."""
+        """Finaliza un viaje manualmente (por el conductor asignado, despachador o administrador).
+
+        Cierra las ventas de inmediato y deja registrado quién lo finalizó con firma 'ATT: <Rol> <Nombre>'
+        para que el vendedor de taquilla y los administradores lo visualicen claramente.
+        """
         trip = self.get_object()
+        user = request.user
+        user_role = getattr(user, "role", None)
+
+        is_staff_allowed = user_role in {"admin", "dispatcher"}
+        driver_profile = getattr(user, "driver_profile", None)
+        is_assigned_driver = (
+            user_role == "driver"
+            and (
+                (driver_profile and trip.driver_id == driver_profile.id)
+                or trip.driver.user_id == user.id
+                or trip.driver.license_number.lower() == getattr(user, "identification_number", "").lower()
+            )
+        )
+
+        if not (is_staff_allowed or is_assigned_driver):
+            return Response(
+                {"detail": "Solo el conductor asignado a este viaje, un despachador o un administrador pueden finalizarlo."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
         if trip.trip_state == Trip.TripState.COMPLETED:
             return Response(
                 {"detail": "El viaje ya se encuentra finalizado."},
@@ -141,26 +221,64 @@ class TripViewSet(ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        prev_state = trip.trip_state
         now = get_server_now()
         trip.trip_state = Trip.TripState.COMPLETED
         trip.state_source = "manual"
-        trip.manual_operator = request.user
+        trip.manual_operator = user
         trip.manual_action_at = now
+
+        update_fields = ["trip_state", "state_source", "manual_operator", "manual_action_at"]
         if not trip.date_time_end:
             trip.date_time_end = now
-            trip.save(update_fields=["trip_state", "state_source", "manual_operator", "manual_action_at", "date_time_end"])
-        else:
-            trip.save(update_fields=["trip_state", "state_source", "manual_operator", "manual_action_at"])
+            update_fields.append("date_time_end")
 
+        odometer_end = request.data.get("odometer_end")
+        fuel_end = request.data.get("fuel_end")
+        if odometer_end is not None:
+            try:
+                trip.odometer_end = int(odometer_end)
+                update_fields.append("odometer_end")
+            except (TypeError, ValueError):
+                pass
+        if fuel_end is not None:
+            try:
+                trip.fuel_end = fuel_end
+                update_fields.append("fuel_end")
+            except (TypeError, ValueError):
+                pass
+
+        trip.save(update_fields=update_fields)
+
+        sig = build_att_signature(user)
+        summary = f"Este viaje #{trip.id} fue finalizado — {sig}"
+        log_audit_event(
+            request=request,
+            module="trips",
+            action="TRIP_COMPLETED",
+            target_model="Trip",
+            target_id=trip.id,
+            summary=summary,
+            previous_data={"trip_state": prev_state},
+            new_data={
+                "trip_state": trip.trip_state,
+                "completed_at": now.isoformat(),
+                "signature": sig,
+                "odometer_end": trip.odometer_end,
+            },
+        )
+
+        serialized = self.get_serializer(trip).data
         return Response(
             {
-                "detail": f"Viaje #{trip.id} finalizado exitosamente.",
-                "trip": self.get_serializer(trip).data,
+                "detail": serialized.get("state_attribution_message") or summary,
+                "attribution": sig,
+                "trip": serialized,
             },
             status=status.HTTP_200_OK,
         )
 
-    @action(detail=True, methods=["post"], url_path="postpone", permission_classes=[IsAdminRole])
+    @action(detail=True, methods=["post"], url_path="postpone", permission_classes=[IsAdminOrDispatcherRole])
     def postpone_trip(self, request, pk=None):
         """Posterga un viaje a una nueva fecha/hora de salida y llegada opcional.
         
@@ -240,10 +358,58 @@ class TripViewSet(ModelViewSet):
                 operator=request.user,
             )
 
+        sig = build_att_signature(request.user)
+        summary = (
+            f"Viaje #{trip.id} postergado de {previous_start.isoformat()} a "
+            f"{parsed_new_start.isoformat()} (Motivo: {reason}) — {sig}"
+        )
+        log_audit_event(
+            request=request,
+            module="trips",
+            action="TRIP_POSTPONED",
+            target_model="Trip",
+            target_id=trip.id,
+            summary=summary,
+            previous_data={
+                "date_time_start": previous_start.isoformat() if previous_start else None,
+                "date_time_end": previous_end.isoformat() if previous_end else None,
+            },
+            new_data={
+                "date_time_start": parsed_new_start.isoformat(),
+                "date_time_end": parsed_new_end.isoformat() if parsed_new_end else None,
+                "reason": reason,
+            },
+        )
+
         return Response(
             {
-                "detail": f"Viaje #{trip.id} postergado exitosamente para {parsed_new_start.isoformat()}.",
+                "detail": summary,
                 "trip": self.get_serializer(trip).data,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    @action(detail=True, methods=["get"], url_path="audit-trail", permission_classes=[IsAuthenticated])
+    def audit_trail(self, request, pk=None):
+        """Devuelve la línea de tiempo de auditoría e historial de un viaje para el vendedor, despachador o admin."""
+        trip = self.get_object()
+        if getattr(request.user, "role", None) == "client":
+            return Response(
+                {"detail": "No tienes permiso para consultar la auditoría interna del viaje."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        from DjangoProject1.apps.support.models import AuditLog
+        from DjangoProject1.apps.support.serializers import AuditLogSerializer
+
+        logs = AuditLog.objects.filter(target_model="Trip", target_id=str(trip.id)).order_by("-created_at", "-id")
+        serialized_trip = self.get_serializer(trip).data
+        return Response(
+            {
+                "trip_id": trip.id,
+                "trip_state": trip.trip_state,
+                "state_attribution_message": serialized_trip.get("state_attribution_message"),
+                "manual_operator_detail": serialized_trip.get("manual_operator_detail"),
+                "audit_logs": AuditLogSerializer(logs, many=True).data,
             },
             status=status.HTTP_200_OK,
         )

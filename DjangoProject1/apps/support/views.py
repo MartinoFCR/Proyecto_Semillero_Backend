@@ -8,8 +8,13 @@ from rest_framework.viewsets import ModelViewSet
 
 from DjangoProject1.apps.sales.models import Sale
 
-from .models import SupportRequest, SystemErrorLog
-from .serializers import SupportRequestSerializer, SystemErrorLogSerializer
+from .models import AuditLog, SupportRequest, SystemErrorLog
+from .serializers import (
+    AuditLogSerializer,
+    SupportRequestSerializer,
+    SystemErrorLogSerializer,
+)
+from rest_framework.viewsets import ReadOnlyModelViewSet
 
 
 class SupportRequestViewSet(ModelViewSet):
@@ -24,7 +29,7 @@ class SupportRequestViewSet(ModelViewSet):
             "sale",
         ).order_by("-created_at")
 
-        if getattr(user, "role", None) != "admin":
+        if getattr(user, "role", None) not in {"admin", "seller"}:
             queryset = queryset.filter(customer=user)
 
         # Filtros administrativos y de consulta
@@ -112,4 +117,52 @@ class SystemErrorLogViewSet(ModelViewSet):
             self.get_serializer(instance).data,
             status=status.HTTP_201_CREATED,
         )
+
+
+class AuditLogViewSet(ReadOnlyModelViewSet):
+    """Bitácora inmutable de auditoría del sistema. Accesible para admin, auditor, dispatcher y seller."""
+
+    queryset = AuditLog.objects.select_related("actor").all().order_by("-created_at", "-id")
+    serializer_class = AuditLogSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self) -> QuerySet:
+        user = self.request.user
+        role = getattr(user, "role", None)
+        if role not in {"admin", "auditor", "dispatcher", "seller"}:
+            return AuditLog.objects.none()
+
+        queryset = super().get_queryset()
+        # Si es vendedor o despachador, puede ver auditoría de viajes y ventas
+        if role in {"seller", "dispatcher"}:
+            queryset = queryset.filter(module__in=["trips", "sales", "fleet"])
+
+        module_param = self.request.query_params.get("module")
+        action_param = self.request.query_params.get("action")
+        actor_param = self.request.query_params.get("actor")
+        actor_role_param = self.request.query_params.get("actor_role")
+        target_model_param = self.request.query_params.get("target_model")
+        target_id_param = self.request.query_params.get("target_id")
+        search = self.request.query_params.get("search", "").strip()
+
+        if module_param:
+            queryset = queryset.filter(module=module_param)
+        if action_param:
+            queryset = queryset.filter(action__iexact=action_param)
+        if actor_param:
+            queryset = queryset.filter(actor_id=actor_param)
+        if actor_role_param:
+            queryset = queryset.filter(actor_role=actor_role_param)
+        if target_model_param:
+            queryset = queryset.filter(target_model__iexact=target_model_param)
+        if target_id_param:
+            queryset = queryset.filter(target_id=str(target_id_param))
+        if search:
+            queryset = queryset.filter(
+                models.Q(summary__icontains=search)
+                | models.Q(actor_name__icontains=search)
+                | models.Q(action__icontains=search)
+                | models.Q(target_id__icontains=search)
+            )
+        return queryset
 

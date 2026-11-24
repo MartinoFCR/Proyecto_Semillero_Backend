@@ -428,6 +428,16 @@ class AdminUserSerializer(serializers.ModelSerializer):
         allow_blank=True,
         allow_null=True,
     )
+    role = serializers.ChoiceField(
+        choices=[
+            (User.Role.ADMIN, "Administrador"),
+            (User.Role.SELLER, "Vendedor / Taquilla"),
+            (User.Role.DISPATCHER, "Despachador Operativo"),
+            (User.Role.AUDITOR, "Auditor / Contabilidad"),
+        ],
+        required=False,
+        default=User.Role.ADMIN,
+    )
     created_by_detail = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
@@ -452,7 +462,6 @@ class AdminUserSerializer(serializers.ModelSerializer):
         )
         read_only_fields = (
             "id",
-            "role",
             "password_change_required",
             "created_by",
             "created_by_detail",
@@ -546,16 +555,17 @@ class AdminUserSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         password = validated_data.pop("password", None)
         identification_number = validated_data["identification_number"]
+        target_role = validated_data.pop("role", User.Role.ADMIN) or User.Role.ADMIN
         username = (validated_data.get("username") or "").strip()
         if not username:
-            base_username = f"admin_{identification_number}"
+            base_username = f"{target_role}_{identification_number}"
             username = base_username
             counter = 1
             while User.objects.filter(username__iexact=username).exists():
                 username = f"{base_username}_{counter}"
                 counter += 1
         validated_data["username"] = username
-        validated_data["role"] = User.Role.ADMIN
+        validated_data["role"] = target_role
         is_active = validated_data.pop("is_active", True)
 
         user = User(**validated_data)
@@ -577,11 +587,12 @@ class AdminUserSerializer(serializers.ModelSerializer):
 
     def update(self, instance, validated_data):
         password = validated_data.pop("password", None)
+        target_role = validated_data.pop("role", instance.role)
         for field, value in validated_data.items():
             if field == "username" and not value:
                 continue
             setattr(instance, field, value)
-        instance.role = User.Role.ADMIN
+        instance.role = target_role
         instance.is_staff = True
         if password:
             from django.utils import timezone

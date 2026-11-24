@@ -84,3 +84,25 @@ class SystemErrorLogSerializer(serializers.ModelSerializer):
             "created_at",
         )
 
+
+class AuditLogSerializer(serializers.ModelSerializer):
+    class Meta:
+        from .models import AuditLog
+        model = AuditLog
+        fields = (
+            "id",
+            "actor",
+            "actor_name",
+            "actor_role",
+            "module",
+            "action",
+            "target_model",
+            "target_id",
+            "summary",
+            "previous_data",
+            "new_data",
+            "ip_address",
+            "created_at",
+        )
+        read_only_fields = fields
+

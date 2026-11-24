@@ -60,7 +60,7 @@ class SaleViewSet(ReadOnlyModelViewSet):
             "trip__route__origin",
             "trip__route__destination",
         ).prefetch_related("tickets", "payment", "items")
-        if self.request.user.role == "admin":
+        if self.request.user.role in {"admin", "seller", "auditor"}:
             return queryset
         return queryset.filter(buyer=self.request.user)
 
@@ -71,8 +71,12 @@ class TicketViewSet(ReadOnlyModelViewSet):
 
     def get_queryset(self):
         queryset = Ticket.objects.select_related("sale", "trip", "seat")
-        if self.request.user.role == "admin":
+        if self.request.user.role in {"admin", "seller", "auditor"}:
             return queryset
+        if self.request.user.role == "driver":
+            driver_profile = getattr(self.request.user, "driver_profile", None)
+            if driver_profile:
+                return queryset.filter(trip__driver=driver_profile)
         return queryset.filter(sale__buyer=self.request.user)
 
 
@@ -131,10 +135,15 @@ class TicketCheckInView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        if request.user.role != User.Role.ADMIN:
+        if request.user.role not in {
+            User.Role.ADMIN,
+            User.Role.SELLER,
+            User.Role.DISPATCHER,
+            User.Role.DRIVER,
+        }:
             return self._error(
                 "permission_denied",
-                "Solo un administrador puede registrar abordajes.",
+                "Solo un administrador, vendedor, despachador o conductor puede registrar abordajes.",
                 status.HTTP_403_FORBIDDEN,
             )
 
@@ -319,9 +328,9 @@ class AdminSaleView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        if request.user.role != "admin":
+        if request.user.role not in {"admin", "seller"}:
             return Response(
-                {"detail": "Solo un administrador puede registrar ventas."},
+                {"detail": "Solo un administrador o vendedor de taquilla puede registrar ventas."},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
@@ -685,6 +694,29 @@ class AdminSaleView(APIView):
                 idempotency_record.save(update_fields=["sale"])
             transaction.on_commit(
                 lambda sale_id=sale.pk: issue_factus_invoice(sale_id)
+            )
+            from DjangoProject1.apps.support.audit import build_att_signature, log_audit_event
+            sig = build_att_signature(request.user)
+            seat_numbers = [s.seat_number for s in seats]
+            log_audit_event(
+                request=request,
+                module="sales",
+                action="ADMIN_SALE_CREATED",
+                target_model="Sale",
+                target_id=sale.pk,
+                summary=(
+                    f"Venta en taquilla #{sale.pk} registrada para el viaje #{trip.pk} "
+                    f"(Sillas: {', '.join(str(n) for n in seat_numbers)}, "
+                    f"Cliente: {request.data['name']} - {request.data['identification_number']}) — {sig}"
+                ),
+                new_data={
+                    "sale_id": sale.pk,
+                    "trip_id": trip.pk,
+                    "seats": seat_numbers,
+                    "amount_cents": amount_cents,
+                    "payment_method": request.data["payment_method"],
+                    "passenger_identification": request.data["identification_number"],
+                },
             )
         sale = Sale.objects.select_related(
             "trip__route__origin",

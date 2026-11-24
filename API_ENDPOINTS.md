@@ -519,12 +519,15 @@ clientes creados por esta ruta no tienen una contraseña utilizable; el
 frontend no debe enviar ni mostrar contraseñas. Los tipos de documento
 disponibles son `13` (CC), `22` (CE), `41` (pasaporte) y `12` (TI).
 
-### Gestión de usuarios administradores (Solo Administradores)
+### Gestión de usuarios administradores y personal interno (Solo Administradores)
 
-Este módulo está restringido exclusivamente a usuarios autenticados que ya poseen el rol `admin` (`IsAdminRole`). Cualquier usuario no autenticado recibe `401 Unauthorized` y cualquier usuario con rol `client` o `driver` recibe `403 Forbidden`.
+Este módulo está restringido exclusivamente a usuarios autenticados que ya poseen el rol `admin` (`IsAdminRole`). Cualquier usuario no autenticado recibe `401 Unauthorized` y cualquier otro rol recibe `403 Forbidden`.
+
+Permite gestionar tanto cuentas de **Administrador (`admin`)** como de **Vendedor/Taquilla (`seller`)**, **Despachador Operativo (`dispatcher`)** y **Auditor (`auditor`)**.
 
 ```http
 GET    /api/accounts/admins/
+GET    /api/accounts/admins/?role={admin|seller|dispatcher|auditor}
 GET    /api/accounts/admins/?search={nombre_correo_usuario_o_documento}
 GET    /api/accounts/admins/?is_active={true|false}
 POST   /api/accounts/admins/
@@ -532,10 +535,11 @@ GET    /api/accounts/admins/{id}/
 PUT    /api/accounts/admins/{id}/
 PATCH  /api/accounts/admins/{id}/
 ```
+*(También disponible bajo el alias `/api/accounts/staff/`).*
 
-> **Nota sobre eliminación (`DELETE`):** Los usuarios administradores **no se pueden eliminar** (`405 Method Not Allowed`) para preservar la trazabilidad e integridad histórica (viajes cancelados, finalizados, postergados o errores resueltos por ese operador). Para retirar el acceso a un administrador, se debe **desactivar** enviando `PATCH /api/accounts/admins/{id}/` con `{"is_active": false}`.
+> **Nota sobre eliminación (`DELETE`):** Los usuarios administrativos **no se pueden eliminar** (`405 Method Not Allowed`) para preservar la trazabilidad e integridad histórica (viajes cancelados, finalizados, postergados, ventas en taquilla o errores resueltos por ese operador). Para retirar el acceso, se debe **desactivar** enviando `PATCH /api/accounts/admins/{id}/` con `{"is_active": false}`.
 
-#### Crear un usuario administrador (`POST /api/accounts/admins/`)
+#### Crear un usuario administrador o de personal (`POST /api/accounts/admins/`)
 
 Acepta `first_name` y `last_name` por separado, o `name` con el nombre completo:
 
@@ -548,20 +552,91 @@ Acepta `first_name` y `last_name` por separado, o `name` con el nombre completo:
   "email": "carlos.admin@portalbic.site",
   "telephone": "3151234567",
   "username": "carlos.gomez",
+  "role": "admin",
   "password": "AdminSegura2026!"
 }
 ```
 
-- **`username`** *(opcional)*: Si no se envía, el backend genera automáticamente `admin_{identification_number}`.
+- **`role`** *(opcional, por defecto `"admin"`)*: Puede ser `"admin"` (Administrador), `"seller"` (Vendedor / Taquilla), `"dispatcher"` (Despachador Operativo) o `"auditor"` (Auditor / Contabilidad).
+- **`username`** *(opcional)*: Si no se envía, el backend genera automáticamente `{role}_{identification_number}`.
 - **`password`** *(opcional)*:
   - Si se envía, se valida con las políticas de seguridad de Django y la cuenta queda lista con `password_change_required: false`.
   - Si no se envía (o se envía vacío), la contraseña inicial será el `identification_number` y quedará con `password_change_required: true`.
-- **`role`**: El backend fuerza siempre `role = "admin"` e `is_staff = True`.
-- **`created_by` y `created_by_detail`** *(auditoría automática)*: Al crear el administrador, el backend guarda automáticamente la referencia al administrador que ejecutó la acción (`request.user`) y devuelve en las respuestas tanto el ID (`created_by`) como el resumen del creador (`created_by_detail`: `id`, `username`, `name`, `email`, `identification_number`) y la fecha de creación (`date_joined`).
-- **Activar / Desactivar un administrador (`PATCH /api/accounts/admins/{id}/`)**:
-  - Enviar `{"is_active": false}` para desactivar o `{"is_active": true}` para reactivar.
+- **`created_by` y `created_by_detail`** *(auditoría automática)*: Al crear el usuario, el backend guarda automáticamente la referencia al administrador que ejecutó la acción (`request.user`), registra el evento en la bitácora `AuditLog` (`STAFF_USER_CREATED`) y devuelve en las respuestas tanto el ID (`created_by`) como el resumen del creador (`created_by_detail`: `id`, `username`, `name`, `email`, `identification_number`) y la fecha de creación (`date_joined`).
+- **Activar / Desactivar (`PATCH /api/accounts/admins/{id}/`)**:
+  - Enviar `{"is_active": false}` para desactivar o `{"is_active": true}` para reactivar. Queda registrado en `AuditLog` (`STAFF_USER_DEACTIVATED` / `STAFF_USER_ACTIVATED`).
   - Un administrador no puede desactivar su propia cuenta en sesión (`400 Bad Request`).
   - No se permite desactivar al último administrador activo del sistema (`400 Bad Request`).
+
+### Sistema de Roles (RBAC), Flujo del Conductor y Control de Auditoría (`AuditLog`)
+
+#### 1. Matriz de Roles del Sistema (`User.Role`)
+
+| Rol (`role`) | Etiqueta | Capacidades Principales |
+|---|---|---|
+| `admin` | Administrador | Control total del sistema, creación/desactivación de usuarios administrativos (`admin`, `seller`, `dispatcher`, `auditor`), flota, tokens IoT, rutas, tarifas, viajes, ventas, reintento Factus y bitácora de auditoría completa. |
+| `seller` | Vendedor / Taquilla | Venta en taquilla (`POST /api/sales/admin-sales/`), búsqueda y registro de clientes (`/api/accounts/customers/`), consulta de viajes y disponibilidad de sillas, *check-in* de abordaje QR, atención de soporte y consulta de quién finalizó o canceló un viaje. |
+| `dispatcher` | Despachador Operativo | Programación de viajes, asignación de bus y conductor, acciones operativas sobre viajes (**cancelar**, **postergar**, **finalizar**) y consulta de auditoría operativa. |
+| `driver` | Conductor | Al crearse en `POST /api/fleet/drivers/`, el backend le crea y vincula automáticamente su usuario (`role = "driver"`, usuario `driver_{license_number}` y clave inicial igual a su número de licencia/documento). Puede consultar **únicamente sus viajes asignados** (`GET /api/trips/trips/`), registrar *check-in* de pasajeros y **finalizar sus propios viajes** (`POST /api/trips/trips/{id}/complete/`). |
+| `auditor` | Auditor / Contabilidad | Acceso de solo lectura a ventas, tiquetes y bitácora de auditoría (`/api/support/audit-logs/`). |
+| `client` | Cliente | Registro público, compra online con Wompi, descarga de tiquetes QR, carné digital y soporte. |
+
+#### 2. Finalización de Viaje por el Conductor y Firma de Atribución (`ATT: ...`)
+
+Cuando un conductor asignado (o un despachador/administrador) finaliza un viaje:
+
+```http
+POST /api/trips/trips/{trip_id}/complete/
+Authorization: Bearer ACCESS_TOKEN
+```
+
+Body opcional (para cierre de bitácora de cabina):
+```json
+{
+  "odometer_end": 154200,
+  "fuel_end": 45.5
+}
+```
+
+La respuesta del viaje (y cualquier consulta posterior de `GET /api/trips/trips/` o `GET /api/trips/trips/{id}/` que haga el **Vendedor** o el **Administrador**) incluye:
+
+```json
+{
+  "id": 45,
+  "trip_state": "completed",
+  "state_source": "manual",
+  "manual_operator": 12,
+  "manual_action_at": "2026-11-24T18:45:00-05:00",
+  "manual_operator_detail": {
+    "id": 12,
+    "username": "driver_1099887766",
+    "name": "Pepe Alfredo",
+    "role": "driver",
+    "role_label": "Conductor",
+    "signature": "ATT: Conductor Pepe Alfredo"
+  },
+  "state_attribution_message": "Este viaje fue finalizado el 24/11/2026 a las 18:45 — ATT: Conductor Pepe Alfredo"
+}
+```
+
+#### 3. Bitácora Inmutable de Auditoría (`GET /api/support/audit-logs/`)
+
+Registra automáticamente quién ejecutó cada acción crítica (`TRIP_CREATED`, `TRIP_COMPLETED`, `TRIP_CANCELLED`, `TRIP_POSTPONED`, `ADMIN_SALE_CREATED`, `STAFF_USER_CREATED`, `STAFF_USER_DEACTIVATED`, `STAFF_USER_ACTIVATED`, `STAFF_ROLE_UPDATED`), desde qué IP, con qué rol y qué datos cambiaron.
+
+```http
+GET /api/support/audit-logs/
+GET /api/support/audit-logs/?module={accounts|trips|sales|fleet|support}
+GET /api/support/audit-logs/?action={TRIP_COMPLETED|ADMIN_SALE_CREATED|...}
+GET /api/support/audit-logs/?actor_role={driver|seller|dispatcher|admin}
+GET /api/support/audit-logs/?target_model=Trip&target_id=45
+GET /api/support/audit-logs/?search=Pepe
+```
+
+También se puede consultar la línea de tiempo de auditoría de un viaje específico directamente desde:
+
+```http
+GET /api/trips/trips/{trip_id}/audit-trail/
+```
 
 ## 5. Flota
 

@@ -27,6 +27,8 @@ class TripSerializer(serializers.ModelSerializer):
     driver_name = serializers.CharField(source="driver.full_name", read_only=True)
     bus_plate = serializers.CharField(source="bus.plate", read_only=True)
     state_source = serializers.CharField(read_only=True)
+    manual_operator_detail = serializers.SerializerMethodField()
+    state_attribution_message = serializers.SerializerMethodField()
     automatic_completion_at = serializers.SerializerMethodField()
     sales_close_at = serializers.SerializerMethodField()
     can_sell = serializers.SerializerMethodField()
@@ -40,14 +42,55 @@ class TripSerializer(serializers.ModelSerializer):
             "id",
             "state_source",
             "manual_operator",
+            "manual_operator_detail",
             "manual_action_at",
             "cancellation_reason",
+            "state_attribution_message",
             "automatic_completion_at",
             "sales_close_at",
             "can_sell",
             "sales_block_reason",
             "server_time",
         )
+
+    def get_manual_operator_detail(self, trip):
+        op = getattr(trip, "manual_operator", None)
+        if not op:
+            return None
+        from DjangoProject1.apps.support.audit import format_user_attribution
+        role_code, role_label, full_name = format_user_attribution(op)
+        return {
+            "id": op.id,
+            "username": op.username,
+            "name": full_name,
+            "role": role_code,
+            "role_label": role_label,
+            "signature": f"ATT: {role_label} {full_name}",
+        }
+
+    def get_state_attribution_message(self, trip):
+        from DjangoProject1.apps.support.audit import build_att_signature
+        op = getattr(trip, "manual_operator", None)
+        action_time = ""
+        if trip.manual_action_at:
+            from django.utils import timezone
+            local_dt = timezone.localtime(trip.manual_action_at)
+            action_time = f" el {local_dt.strftime('%d/%m/%Y a las %H:%M')}"
+
+        if trip.trip_state == Trip.TripState.COMPLETED:
+            if op:
+                sig = build_att_signature(op)
+                return f"Este viaje fue finalizado{action_time} — {sig}"
+            return "Este viaje fue finalizado automáticamente por cumplimiento de horario programado."
+        if trip.trip_state == Trip.TripState.CANCELLED:
+            reason_part = f" (Motivo: {trip.cancellation_reason})" if trip.cancellation_reason else ""
+            if op:
+                sig = build_att_signature(op)
+                return f"Este viaje fue cancelado{action_time}{reason_part} — {sig}"
+            return f"Este viaje fue cancelado{reason_part}."
+        if trip.trip_state == Trip.TripState.IN_PROGRESS:
+            return f"Viaje en curso — Conductor asignado: {trip.driver.full_name}"
+        return f"Viaje programado — Conductor asignado: {trip.driver.full_name}"
 
     def _get_sales_meta(self, trip):
         if not hasattr(trip, "_cached_sales_meta"):

@@ -32,7 +32,8 @@ from DjangoProject1.apps.accounts.serializers import (
     PublicRegistrationSerializer,
     UserSerializer,
 )
-from DjangoProject1.permissions import IsAdminRole
+from DjangoProject1.permissions import IsAdminRole, IsAdminOrSellerRole
+from DjangoProject1.apps.support.audit import build_att_signature, log_audit_event
 
 
 class UserViewSet(ModelViewSet):
@@ -58,11 +59,20 @@ class AdminUserViewSet(ModelViewSet):
     http_method_names = ["get", "post", "put", "patch", "head", "options"]
 
     def get_queryset(self):
+        role_filter = self.request.query_params.get("role", "").strip().lower()
+        staff_roles = [
+            User.Role.ADMIN,
+            User.Role.SELLER,
+            User.Role.DISPATCHER,
+            User.Role.AUDITOR,
+        ]
         queryset = (
             User.objects.select_related("created_by")
-            .filter(role=User.Role.ADMIN)
+            .filter(role__in=staff_roles)
             .order_by("id")
         )
+        if role_filter in staff_roles:
+            queryset = queryset.filter(role=role_filter)
         search = self.request.query_params.get("search", "").strip()
         is_active = self.request.query_params.get("is_active")
         if search:
@@ -81,36 +91,89 @@ class AdminUserViewSet(ModelViewSet):
                 queryset = queryset.filter(is_active=False)
         return queryset
 
+    def perform_create(self, serializer):
+        instance = serializer.save()
+        sig = build_att_signature(self.request.user)
+        full_name = " ".join(part for part in (instance.first_name, instance.last_name) if part) or instance.username
+        log_audit_event(
+            request=self.request,
+            module="accounts",
+            action="STAFF_USER_CREATED",
+            target_model="User",
+            target_id=instance.id,
+            summary=(
+                f"Usuario administrativo '{full_name}' ({instance.email}) creado con rol '{instance.role}' — {sig}"
+            ),
+            new_data={
+                "user_id": instance.id,
+                "username": instance.username,
+                "email": instance.email,
+                "role": instance.role,
+                "created_by_id": self.request.user.id,
+            },
+        )
+
     def _validate_can_deactivate(self, request, instance):
         if instance.pk == request.user.pk:
             return Response(
                 {"detail": "No puedes desactivar tu propia cuenta de administrador."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        active_admins = (
-            User.objects.filter(role=User.Role.ADMIN, is_active=True)
-            .exclude(pk=instance.pk)
-            .count()
-        )
-        if active_admins == 0:
-            return Response(
-                {"detail": "No se puede desactivar al único administrador activo del sistema."},
-                status=status.HTTP_400_BAD_REQUEST,
+        if instance.role == User.Role.ADMIN:
+            active_admins = (
+                User.objects.filter(role=User.Role.ADMIN, is_active=True)
+                .exclude(pk=instance.pk)
+                .count()
             )
+            if active_admins == 0:
+                return Response(
+                    {"detail": "No se puede desactivar al único administrador activo del sistema."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
         return None
 
     def update(self, request, *args, **kwargs):
         instance = self.get_object()
+        was_active = instance.is_active
+        prev_role = instance.role
         is_active_param = request.data.get("is_active")
         if is_active_param in {False, "false", "False", "0", 0}:
             error_response = self._validate_can_deactivate(request, instance)
             if error_response is not None:
                 return error_response
-        return super().update(request, *args, **kwargs)
+        response = super().update(request, *args, **kwargs)
+        instance.refresh_from_db()
+        sig = build_att_signature(request.user)
+        full_name = " ".join(part for part in (instance.first_name, instance.last_name) if part) or instance.username
+        if was_active != instance.is_active:
+            state_str = "activado" if instance.is_active else "desactivado"
+            action_code = "STAFF_USER_ACTIVATED" if instance.is_active else "STAFF_USER_DEACTIVATED"
+            log_audit_event(
+                request=request,
+                module="accounts",
+                action=action_code,
+                target_model="User",
+                target_id=instance.id,
+                summary=f"Usuario '{full_name}' ({instance.role}) fue {state_str} — {sig}",
+                previous_data={"is_active": was_active},
+                new_data={"is_active": instance.is_active},
+            )
+        elif prev_role != instance.role:
+            log_audit_event(
+                request=request,
+                module="accounts",
+                action="STAFF_ROLE_UPDATED",
+                target_model="User",
+                target_id=instance.id,
+                summary=f"Rol de '{full_name}' cambiado de '{prev_role}' a '{instance.role}' — {sig}",
+                previous_data={"role": prev_role},
+                new_data={"role": instance.role},
+            )
+        return response
 
 
 class CustomerSearchView(APIView):
-    permission_classes = [IsAdminRole]
+    permission_classes = [IsAdminOrSellerRole]
 
     def get(self, request):
         identification_number = request.query_params.get(
@@ -136,7 +199,7 @@ class CustomerSearchView(APIView):
 
 
 class CustomerListCreateView(APIView):
-    permission_classes = [IsAdminRole]
+    permission_classes = [IsAdminOrSellerRole]
 
     def get(self, request):
         customers = User.objects.filter(
@@ -148,6 +211,9 @@ class CustomerListCreateView(APIView):
         serializer = CustomerSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         customer = serializer.save()
+        if request.user and request.user.is_authenticated:
+            customer.created_by = request.user
+            customer.save(update_fields=["created_by"])
         return Response(
             CustomerSerializer(customer).data,
             status=status.HTTP_201_CREATED,
@@ -155,7 +221,7 @@ class CustomerListCreateView(APIView):
 
 
 class CustomerDetailView(APIView):
-    permission_classes = [IsAdminRole]
+    permission_classes = [IsAdminOrSellerRole]
 
     def get_object(self, pk):
         return User.objects.filter(

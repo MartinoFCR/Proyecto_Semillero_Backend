@@ -280,4 +280,87 @@ class TripValidationAndScheduleTests(TestCase):
         self.assertEqual(state_5, "completed")
         self.assertEqual(auto_end, trip.date_time_start + timedelta(hours=4))
 
+    def test_assigned_driver_can_complete_trip_with_att_signature_and_audit_log(self):
+        from django.contrib.auth import get_user_model
+        from rest_framework.test import APIClient
+        from DjangoProject1.apps.support.models import AuditLog
+
+        User = get_user_model()
+        driver_user = User.objects.create_user(
+            username="driver_pepe",
+            password="PepePassword123!",
+            email="pepe.alfredo@portalbic.site",
+            identification_number="1099887766",
+            first_name="Pepe",
+            last_name="Alfredo",
+            role=User.Role.DRIVER,
+        )
+        pepe_driver = Driver.objects.create(
+            full_name="Pepe Alfredo",
+            user=driver_user,
+            license_number="1099887766",
+            address="Calle 10 #20-30",
+            phone_number="3100001122",
+            is_active=True,
+        )
+        seller_user = User.objects.create_user(
+            username="seller_taquilla",
+            password="SellerPassword123!",
+            email="taquilla1@portalbic.site",
+            identification_number="1055443322",
+            first_name="Ana",
+            last_name="Vendedora",
+            role=User.Role.SELLER,
+        )
+
+        trip = Trip.objects.create(
+            bus=self.bus_active,
+            driver=pepe_driver,
+            route=self.route,
+            date_time_start=timezone.now(),
+            trip_state=Trip.TripState.IN_PROGRESS,
+        )
+
+        api = APIClient()
+        api.force_authenticate(driver_user)
+
+        # El conductor solo ve sus viajes asignados
+        list_resp = api.get("/api/trips/trips/")
+        self.assertEqual(list_resp.status_code, 200)
+
+        # El conductor finaliza el viaje
+        complete_resp = api.post(
+            f"/api/trips/trips/{trip.id}/complete/",
+            {"odometer_end": 154200},
+            format="json",
+        )
+        self.assertEqual(complete_resp.status_code, 200, complete_resp.data)
+        self.assertEqual(complete_resp.data["attribution"], "ATT: Conductor Pepe Alfredo")
+        self.assertIn(
+            "ATT: Conductor Pepe Alfredo",
+            complete_resp.data["trip"]["state_attribution_message"],
+        )
+
+        # El vendedor consulta el viaje y ve la firma del conductor
+        api.force_authenticate(seller_user)
+        seller_view = api.get(f"/api/trips/trips/{trip.id}/")
+        self.assertEqual(seller_view.status_code, 200)
+        self.assertIn(
+            "Este viaje fue finalizado",
+            seller_view.data["state_attribution_message"],
+        )
+        self.assertIn(
+            "ATT: Conductor Pepe Alfredo",
+            seller_view.data["state_attribution_message"],
+        )
+
+        # La bitácora de auditoría registró el evento inmutable
+        audit_entry = AuditLog.objects.filter(
+            module="trips",
+            action="TRIP_COMPLETED",
+            target_id=str(trip.id),
+        ).first()
+        self.assertIsNotNone(audit_entry)
+        self.assertIn("ATT: Conductor Pepe Alfredo", audit_entry.summary)
+
 

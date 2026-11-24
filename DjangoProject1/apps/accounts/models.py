@@ -34,6 +34,9 @@ class User(AbstractUser):
     class Role(models.TextChoices):
         CLIENT = 'client', 'Cliente'
         DRIVER = 'driver', 'Conductor'
+        SELLER = 'seller', 'Vendedor / Taquilla'
+        DISPATCHER = 'dispatcher', 'Despachador Operativo'
+        AUDITOR = 'auditor', 'Auditor / Contabilidad'
         ADMIN = 'admin', 'Administrador'
 
     role = models.CharField(max_length=20, choices=Role.choices, default=Role.CLIENT)

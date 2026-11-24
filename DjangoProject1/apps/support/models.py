@@ -122,3 +122,81 @@ class SystemErrorLog(models.Model):
     def __str__(self):
         return f"[{self.service.upper()}] ({self.level}) {self.error_message[:60]} ({self.created_at})"
 
+
+class AuditLog(models.Model):
+    """Bitácora inmutable de auditoría de acciones operativas, administrativas y de seguridad."""
+
+    class Module(models.TextChoices):
+        ACCOUNTS = "accounts", "Cuentas y Roles"
+        TRIPS = "trips", "Viajes y Despacho"
+        SALES = "sales", "Ventas y Tiquetes"
+        FLEET = "fleet", "Flota, Conductores y GPS"
+        SUPPORT = "support", "Soporte y Sistema"
+
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="audit_logs",
+    )
+    actor_name = models.CharField(
+        max_length=160,
+        blank=True,
+        default="Sistema Automático",
+        help_text="Nombre y rol congelado de quien ejecutó la acción (ej. 'Conductor Pepe Alfredo').",
+    )
+    actor_role = models.CharField(
+        max_length=30,
+        blank=True,
+        default="system",
+        db_index=True,
+    )
+    module = models.CharField(
+        max_length=30,
+        choices=Module.choices,
+        default=Module.SUPPORT,
+        db_index=True,
+    )
+    action = models.CharField(
+        max_length=60,
+        db_index=True,
+        help_text="Código de acción (ej. TRIP_COMPLETED, TRIP_CANCELLED, ADMIN_CREATED, ADMIN_SALE_CREATED).",
+    )
+    target_model = models.CharField(
+        max_length=60,
+        blank=True,
+        default="",
+    )
+    target_id = models.CharField(
+        max_length=60,
+        blank=True,
+        default="",
+        db_index=True,
+    )
+    summary = models.TextField(
+        help_text="Descripción legible con firma de atribución (ej. 'Este viaje #45 fue finalizado — ATT: Conductor Pepe Alfredo').",
+    )
+    previous_data = models.JSONField(
+        blank=True,
+        null=True,
+    )
+    new_data = models.JSONField(
+        blank=True,
+        null=True,
+    )
+    ip_address = models.GenericIPAddressField(
+        blank=True,
+        null=True,
+    )
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        verbose_name = "Registro de Auditoría"
+        verbose_name_plural = "Registros de Auditoría"
+        ordering = ["-created_at", "-id"]
+
+    def __str__(self):
+        return f"[{self.module.upper()}:{self.action}] {self.summary[:80]}"
+
+

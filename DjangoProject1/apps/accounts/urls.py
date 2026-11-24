@@ -22,6 +22,7 @@ from DjangoProject1.apps.accounts.views import (
 router = DefaultRouter()
 router.register("users", UserViewSet, basename="user")
 router.register("admins", AdminUserViewSet, basename="admin-user")
+router.register("staff", AdminUserViewSet, basename="staff-user")
 
 urlpatterns = router.urls + [
     path("register/", PublicRegistrationView.as_view(), name="register"),
