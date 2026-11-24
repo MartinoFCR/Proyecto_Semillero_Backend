@@ -428,6 +428,7 @@ class AdminUserSerializer(serializers.ModelSerializer):
         allow_blank=True,
         allow_null=True,
     )
+    created_by_detail = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = User
@@ -444,9 +445,34 @@ class AdminUserSerializer(serializers.ModelSerializer):
             "role",
             "is_active",
             "password_change_required",
+            "created_by",
+            "created_by_detail",
+            "date_joined",
             "password",
         )
-        read_only_fields = ("id", "role", "password_change_required")
+        read_only_fields = (
+            "id",
+            "role",
+            "password_change_required",
+            "created_by",
+            "created_by_detail",
+            "date_joined",
+        )
+
+    def get_created_by_detail(self, obj):
+        creator = getattr(obj, "created_by", None)
+        if not creator:
+            return None
+        full_name = " ".join(
+            part for part in (creator.first_name, creator.last_name) if part
+        )
+        return {
+            "id": creator.id,
+            "username": creator.username,
+            "name": full_name or creator.username,
+            "email": creator.email,
+            "identification_number": creator.identification_number,
+        }
 
     def validate_email(self, value):
         value = value.strip().lower()
@@ -543,6 +569,9 @@ class AdminUserSerializer(serializers.ModelSerializer):
         user.is_active = is_active
         user.is_staff = True
         user.is_superuser = False
+        request = self.context.get("request")
+        if request and getattr(request, "user", None) and request.user.is_authenticated:
+            user.created_by = request.user
         user.save()
         return user
 

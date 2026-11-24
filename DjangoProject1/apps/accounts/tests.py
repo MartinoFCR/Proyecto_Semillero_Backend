@@ -257,9 +257,13 @@ class ClientProfileTests(APITestCase):
         self.assertEqual(create_resp.data["role"], "admin")
         self.assertEqual(create_resp.data["name"], "Carlos Gomez")
         self.assertFalse(create_resp.data["password_change_required"])
+        self.assertEqual(create_resp.data["created_by"], existing_admin.id)
+        self.assertEqual(create_resp.data["created_by_detail"]["id"], existing_admin.id)
+        self.assertEqual(create_resp.data["created_by_detail"]["email"], existing_admin.email)
 
         created_admin = user_model.objects.get(pk=create_resp.data["id"])
         self.assertEqual(created_admin.role, user_model.Role.ADMIN)
+        self.assertEqual(created_admin.created_by_id, existing_admin.id)
         self.assertTrue(created_admin.is_staff)
         self.assertTrue(created_admin.check_password("CarlosSecurePass123!"))
 

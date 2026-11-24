@@ -39,6 +39,13 @@ class User(AbstractUser):
     role = models.CharField(max_length=20, choices=Role.choices, default=Role.CLIENT)
     password_changed_at = models.DateTimeField(default=timezone.now)
     password_change_required = models.BooleanField(default=False)
+    created_by = models.ForeignKey(
+        "self",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="created_users",
+    )
 
     USERNAME_FIELD = 'username'
     REQUIRED_FIELDS = ['identification_number']

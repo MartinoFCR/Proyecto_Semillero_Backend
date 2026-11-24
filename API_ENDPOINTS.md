@@ -557,6 +557,7 @@ Acepta `first_name` y `last_name` por separado, o `name` con el nombre completo:
   - Si se envía, se valida con las políticas de seguridad de Django y la cuenta queda lista con `password_change_required: false`.
   - Si no se envía (o se envía vacío), la contraseña inicial será el `identification_number` y quedará con `password_change_required: true`.
 - **`role`**: El backend fuerza siempre `role = "admin"` e `is_staff = True`.
+- **`created_by` y `created_by_detail`** *(auditoría automática)*: Al crear el administrador, el backend guarda automáticamente la referencia al administrador que ejecutó la acción (`request.user`) y devuelve en las respuestas tanto el ID (`created_by`) como el resumen del creador (`created_by_detail`: `id`, `username`, `name`, `email`, `identification_number`) y la fecha de creación (`date_joined`).
 - **Activar / Desactivar un administrador (`PATCH /api/accounts/admins/{id}/`)**:
   - Enviar `{"is_active": false}` para desactivar o `{"is_active": true}` para reactivar.
   - Un administrador no puede desactivar su propia cuenta en sesión (`400 Bad Request`).

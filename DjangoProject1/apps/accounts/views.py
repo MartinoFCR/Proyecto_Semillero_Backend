@@ -58,7 +58,11 @@ class AdminUserViewSet(ModelViewSet):
     http_method_names = ["get", "post", "put", "patch", "head", "options"]
 
     def get_queryset(self):
-        queryset = User.objects.filter(role=User.Role.ADMIN).order_by("id")
+        queryset = (
+            User.objects.select_related("created_by")
+            .filter(role=User.Role.ADMIN)
+            .order_by("id")
+        )
         search = self.request.query_params.get("search", "").strip()
         is_active = self.request.query_params.get("is_active")
         if search:
