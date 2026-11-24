@@ -519,6 +519,47 @@ clientes creados por esta ruta no tienen una contraseña utilizable; el
 frontend no debe enviar ni mostrar contraseñas. Los tipos de documento
 disponibles son `13` (CC), `22` (CE), `41` (pasaporte) y `12` (TI).
 
+### Gestión de usuarios administradores (Solo Administradores)
+
+Este módulo está restringido exclusivamente a usuarios autenticados que ya poseen el rol `admin` (`IsAdminRole`). Cualquier usuario no autenticado recibe `401 Unauthorized` y cualquier usuario con rol `client` o `driver` recibe `403 Forbidden`.
+
+```http
+GET    /api/accounts/admins/
+GET    /api/accounts/admins/?search={nombre_correo_usuario_o_documento}
+GET    /api/accounts/admins/?is_active={true|false}
+POST   /api/accounts/admins/
+GET    /api/accounts/admins/{id}/
+PUT    /api/accounts/admins/{id}/
+PATCH  /api/accounts/admins/{id}/
+DELETE /api/accounts/admins/{id}/
+```
+
+#### Crear un usuario administrador (`POST /api/accounts/admins/`)
+
+Acepta `first_name` y `last_name` por separado, o `name` con el nombre completo:
+
+```json
+{
+  "identification_document_code": "13",
+  "identification_number": "1098765432",
+  "first_name": "Carlos",
+  "last_name": "Gómez",
+  "email": "carlos.admin@portalbic.site",
+  "telephone": "3151234567",
+  "username": "carlos.gomez",
+  "password": "AdminSegura2026!"
+}
+```
+
+- **`username`** *(opcional)*: Si no se envía, el backend genera automáticamente `admin_{identification_number}`.
+- **`password`** *(opcional)*:
+  - Si se envía, se valida con las políticas de seguridad de Django y la cuenta queda lista con `password_change_required: false`.
+  - Si no se envía (o se envía vacío), la contraseña inicial será el `identification_number` y quedará con `password_change_required: true`.
+- **`role`**: El backend fuerza siempre `role = "admin"` e `is_staff = True`.
+- **Protecciones de seguridad en `DELETE /api/accounts/admins/{id}/`**:
+  - Un administrador no puede eliminar su propia cuenta en sesión (`400 Bad Request`).
+  - No se permite eliminar al último administrador activo del sistema (`400 Bad Request`).
+
 ## 5. Flota
 
 Todos estos endpoints permiten lectura a usuarios autenticados y escritura

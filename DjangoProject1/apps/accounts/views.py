@@ -26,6 +26,7 @@ from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, Ou
 
 from DjangoProject1.apps.accounts.models import AccountActionToken, User
 from DjangoProject1.apps.accounts.serializers import (
+    AdminUserSerializer,
     CustomerSerializer,
     ProfileSerializer,
     PublicRegistrationSerializer,
@@ -42,6 +43,49 @@ class UserViewSet(ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save()
+
+
+class AdminUserViewSet(ModelViewSet):
+    """Gestión de usuarios administradores (exclusivo para usuarios con rol 'admin')."""
+
+    serializer_class = AdminUserSerializer
+    permission_classes = [IsAdminRole]
+    http_method_names = ["get", "post", "put", "patch", "delete", "head", "options"]
+
+    def get_queryset(self):
+        queryset = User.objects.filter(role=User.Role.ADMIN).order_by("id")
+        search = self.request.query_params.get("search", "").strip()
+        is_active = self.request.query_params.get("is_active")
+        if search:
+            from django.db.models import Q
+            queryset = queryset.filter(
+                Q(first_name__icontains=search)
+                | Q(last_name__icontains=search)
+                | Q(username__icontains=search)
+                | Q(email__icontains=search)
+                | Q(identification_number__icontains=search)
+            )
+        if is_active is not None:
+            if is_active.lower() in {"true", "1"}:
+                queryset = queryset.filter(is_active=True)
+            elif is_active.lower() in {"false", "0"}:
+                queryset = queryset.filter(is_active=False)
+        return queryset
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        if instance.pk == request.user.pk:
+            return Response(
+                {"detail": "No puedes eliminar o desactivar tu propia cuenta de administrador."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        active_admins = User.objects.filter(role=User.Role.ADMIN, is_active=True).exclude(pk=instance.pk).count()
+        if active_admins == 0:
+            return Response(
+                {"detail": "No se puede eliminar al único administrador activo del sistema."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return super().destroy(request, *args, **kwargs)
 
 
 class CustomerSearchView(APIView):

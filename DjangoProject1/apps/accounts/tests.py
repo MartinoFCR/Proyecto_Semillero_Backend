@@ -8,7 +8,7 @@ from django.test import override_settings
 from PIL import Image
 from rest_framework.test import APITestCase
 
-from .serializers import CustomerSerializer
+from .serializers import AdminUserSerializer, CustomerSerializer
 from .models import LoginAttempt
 
 
@@ -210,3 +210,74 @@ class ClientProfileTests(APITestCase):
             format="json",
         )
         self.assertEqual(blocked.status_code, 429)
+
+    def test_only_admins_can_manage_admin_users(self):
+        user_model = get_user_model()
+        # Un cliente autenticado no puede listar ni crear administradores (403 Forbidden)
+        forbidden_list = self.client.get("/api/accounts/admins/")
+        self.assertEqual(forbidden_list.status_code, 403)
+        forbidden_create = self.client.post(
+            "/api/accounts/admins/",
+            {
+                "identification_number": "800000001",
+                "name": "Nuevo Admin",
+                "email": "nuevo.admin@example.com",
+            },
+            format="json",
+        )
+        self.assertEqual(forbidden_create.status_code, 403)
+
+        # Autenticado como administrador existente
+        existing_admin = user_model.objects.create_user(
+            username="root_admin",
+            password="AdminPassword123!",
+            email="root.admin@example.com",
+            identification_number="800000000",
+            first_name="Root",
+            last_name="Admin",
+            role=user_model.Role.ADMIN,
+        )
+        self.client.force_authenticate(existing_admin)
+
+        # Crear nuevo administrador con contraseña explícita
+        create_resp = self.client.post(
+            "/api/accounts/admins/",
+            {
+                "identification_document_code": "13",
+                "identification_number": "800000002",
+                "first_name": "Carlos",
+                "last_name": "Gomez",
+                "email": "carlos.admin@example.com",
+                "telephone": "3150001122",
+                "password": "CarlosSecurePass123!",
+            },
+            format="json",
+        )
+        self.assertEqual(create_resp.status_code, 201, create_resp.data)
+        self.assertEqual(create_resp.data["role"], "admin")
+        self.assertEqual(create_resp.data["name"], "Carlos Gomez")
+        self.assertFalse(create_resp.data["password_change_required"])
+
+        created_admin = user_model.objects.get(pk=create_resp.data["id"])
+        self.assertEqual(created_admin.role, user_model.Role.ADMIN)
+        self.assertTrue(created_admin.is_staff)
+        self.assertTrue(created_admin.check_password("CarlosSecurePass123!"))
+
+        # Crear administrador sin contraseña (usa documento como clave inicial)
+        create_default_pw = self.client.post(
+            "/api/accounts/admins/",
+            {
+                "identification_number": "800000003",
+                "name": "Laura Martinez",
+                "email": "laura.admin@example.com",
+            },
+            format="json",
+        )
+        self.assertEqual(create_default_pw.status_code, 201, create_default_pw.data)
+        self.assertTrue(create_default_pw.data["password_change_required"])
+        laura = user_model.objects.get(pk=create_default_pw.data["id"])
+        self.assertTrue(laura.check_password("800000003"))
+
+        # No puede eliminarse a sí mismo
+        self_delete = self.client.delete(f"/api/accounts/admins/{existing_admin.id}/")
+        self.assertEqual(self_delete.status_code, 400)

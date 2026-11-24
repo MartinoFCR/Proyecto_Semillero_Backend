@@ -2,6 +2,7 @@ from django.urls import path
 from rest_framework.routers import DefaultRouter
 
 from DjangoProject1.apps.accounts.views import (
+    AdminUserViewSet,
     CustomerDetailView,
     CustomerListCreateView,
     CustomerSearchView,
@@ -20,6 +21,7 @@ from DjangoProject1.apps.accounts.views import (
 
 router = DefaultRouter()
 router.register("users", UserViewSet, basename="user")
+router.register("admins", AdminUserViewSet, basename="admin-user")
 
 urlpatterns = router.urls + [
     path("register/", PublicRegistrationView.as_view(), name="register"),

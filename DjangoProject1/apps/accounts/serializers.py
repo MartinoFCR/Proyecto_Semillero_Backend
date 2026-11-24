@@ -376,3 +376,196 @@ class ProfileSerializer(serializers.ModelSerializer):
             return None
         request = self.context.get("request")
         return request.build_absolute_uri(user.photo.url) if request else user.photo.url
+
+
+class AdminUserSerializer(serializers.ModelSerializer):
+    """Serializer exclusivo para la gestión de usuarios administradores (rol 'admin')."""
+
+    name = serializers.CharField(
+        write_only=True,
+        required=False,
+        allow_blank=True,
+        max_length=150,
+    )
+    username = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        max_length=150,
+    )
+    first_name = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        max_length=150,
+    )
+    last_name = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        max_length=150,
+    )
+    password = serializers.CharField(
+        write_only=True,
+        required=False,
+        allow_blank=True,
+        trim_whitespace=False,
+    )
+    identification_document_code = serializers.ChoiceField(
+        choices=User.DocumentType.choices,
+        required=False,
+        default=User.DocumentType.CC,
+    )
+    identification_number = serializers.RegexField(
+        r"^[A-Za-z0-9.-]+$",
+        max_length=20,
+    )
+    email = serializers.EmailField(
+        required=True,
+        allow_blank=False,
+        trim_whitespace=True,
+    )
+    telephone = serializers.CharField(
+        max_length=20,
+        required=False,
+        allow_blank=True,
+        allow_null=True,
+    )
+
+    class Meta:
+        model = User
+        fields = (
+            "id",
+            "username",
+            "identification_document_code",
+            "identification_number",
+            "name",
+            "first_name",
+            "last_name",
+            "email",
+            "telephone",
+            "role",
+            "is_active",
+            "password_change_required",
+            "password",
+        )
+        read_only_fields = ("id", "role", "password_change_required")
+
+    def validate_email(self, value):
+        value = value.strip().lower()
+        if not value:
+            raise serializers.ValidationError("El correo electrónico es obligatorio.")
+        queryset = User.objects.filter(email__iexact=value)
+        if self.instance:
+            queryset = queryset.exclude(pk=self.instance.pk)
+        if queryset.exists():
+            raise serializers.ValidationError("Este correo electrónico ya está registrado.")
+        return value
+
+    def validate_identification_number(self, value):
+        value = value.strip()
+        if not value:
+            raise serializers.ValidationError("El número de identificación es obligatorio.")
+        queryset = User.objects.filter(identification_number__iexact=value)
+        if self.instance:
+            queryset = queryset.exclude(pk=self.instance.pk)
+        if queryset.exists():
+            raise serializers.ValidationError("Este número de identificación ya está registrado.")
+        return value
+
+    def validate_username(self, value):
+        value = value.strip()
+        if not value:
+            return value
+        queryset = User.objects.filter(username__iexact=value)
+        if self.instance:
+            queryset = queryset.exclude(pk=self.instance.pk)
+        if queryset.exists():
+            raise serializers.ValidationError("Este nombre de usuario ya está registrado.")
+        return value
+
+    def validate(self, attrs):
+        raw_name = (attrs.pop("name", "") or "").strip()
+        first_name = (attrs.get("first_name") or "").strip()
+        last_name = (attrs.get("last_name") or "").strip()
+
+        if raw_name and not first_name:
+            parts = " ".join(raw_name.split()).split(" ", 1)
+            attrs["first_name"] = parts[0]
+            if len(parts) > 1 and not last_name:
+                attrs["last_name"] = parts[1]
+        else:
+            if "first_name" in attrs:
+                attrs["first_name"] = first_name
+            if "last_name" in attrs:
+                attrs["last_name"] = last_name
+
+        if self.instance is None and not attrs.get("first_name"):
+            raise serializers.ValidationError(
+                {"first_name": "El nombre del administrador es obligatorio."}
+            )
+
+        password = attrs.get("password")
+        if password:
+            candidate_data = {
+                k: v
+                for k, v in attrs.items()
+                if k in {"username", "email", "first_name", "last_name", "identification_number"}
+            }
+            candidate_user = self.instance or User(**candidate_data)
+            try:
+                password_validation.validate_password(password, user=candidate_user)
+            except DjangoValidationError as exc:
+                raise serializers.ValidationError({"password": list(exc.messages)})
+
+        return attrs
+
+    def create(self, validated_data):
+        password = validated_data.pop("password", None)
+        identification_number = validated_data["identification_number"]
+        username = (validated_data.get("username") or "").strip()
+        if not username:
+            base_username = f"admin_{identification_number}"
+            username = base_username
+            counter = 1
+            while User.objects.filter(username__iexact=username).exists():
+                username = f"{base_username}_{counter}"
+                counter += 1
+        validated_data["username"] = username
+        validated_data["role"] = User.Role.ADMIN
+        is_active = validated_data.pop("is_active", True)
+
+        user = User(**validated_data)
+        if password:
+            user.set_password(password)
+            user.password_change_required = False
+        else:
+            user.set_password(identification_number)
+            user.password_change_required = True
+
+        user.is_active = is_active
+        user.is_staff = True
+        user.is_superuser = False
+        user.save()
+        return user
+
+    def update(self, instance, validated_data):
+        password = validated_data.pop("password", None)
+        for field, value in validated_data.items():
+            if field == "username" and not value:
+                continue
+            setattr(instance, field, value)
+        instance.role = User.Role.ADMIN
+        instance.is_staff = True
+        if password:
+            from django.utils import timezone
+            instance.set_password(password)
+            instance.password_changed_at = timezone.now()
+            instance.password_change_required = False
+        instance.save()
+        return instance
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        full_name = " ".join(
+            part for part in (instance.first_name, instance.last_name) if part
+        )
+        data["name"] = full_name or instance.username
+        return data
