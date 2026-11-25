@@ -40,7 +40,44 @@ class Bus(models.Model):
         ordering = ['id']
 
 class Driver(models.Model):
-    full_name = models.CharField(max_length=70, null=False)
+    DOCUMENT_TYPE_CHOICES = [
+        ("CC", "CC"),
+        ("DNI", "DNI"),
+        ("PASSPORT", "PASSPORT"),
+        ("CE", "CE"),
+    ]
+    LICENSE_CATEGORY_CHOICES = [
+        ("C1", "C1"),
+        ("C2", "C2"),
+        ("C3", "C3"),
+    ]
+    BLOOD_GROUP_CHOICES = [
+        ("O+", "O+"),
+        ("O-", "O-"),
+        ("A+", "A+"),
+        ("A-", "A-"),
+        ("B+", "B+"),
+        ("B-", "B-"),
+        ("AB+", "AB+"),
+        ("AB-", "AB-"),
+    ]
+    OPERATIONAL_STATUS_CHOICES = [
+        ("DISPONIBLE", "Disponible"),
+        ("ACTIVO", "Activo en Flota"),
+        ("CAPACITACION", "En Capacitación"),
+    ]
+
+    full_name = models.CharField(max_length=150, null=False)
+    first_name = models.CharField(max_length=120, blank=True, default="")
+    last_name = models.CharField(max_length=120, blank=True, default="")
+    document_type = models.CharField(
+        max_length=20,
+        choices=DOCUMENT_TYPE_CHOICES,
+        default="CC",
+    )
+    document_number = models.CharField(max_length=30, blank=True, default="")
+    birth_date = models.DateField(null=True, blank=True)
+    email = models.EmailField(blank=True, default="")
     user = models.OneToOneField(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -48,10 +85,36 @@ class Driver(models.Model):
         blank=True,
         related_name='driver_profile'
     )
-    license_number = models.CharField(max_length=20, null=False, unique=True)
-    address = models.CharField(max_length=50, null=False)
-    phone_number = models.CharField(max_length=20, null=False)
+    license_number = models.CharField(max_length=30, null=False, unique=True)
+    license_category = models.CharField(
+        max_length=10,
+        choices=LICENSE_CATEGORY_CHOICES,
+        default="C3",
+    )
+    license_expiry = models.DateField(null=True, blank=True)
+    experience_years = models.PositiveSmallIntegerField(default=4)
+    blood_group = models.CharField(
+        max_length=5,
+        choices=BLOOD_GROUP_CHOICES,
+        default="O+",
+    )
+    operational_status = models.CharField(
+        max_length=20,
+        choices=OPERATIONAL_STATUS_CHOICES,
+        default="DISPONIBLE",
+    )
+    photo = models.ImageField(
+        upload_to="driver_photos/",
+        null=True,
+        blank=True,
+    )
+    address = models.CharField(max_length=120, null=False)
+    phone_number = models.CharField(max_length=30, null=False)
     is_active = models.BooleanField(default=True)
+    has_medical_exam = models.BooleanField(default=True)
+    has_psychosensometric_test = models.BooleanField(default=True)
+    has_clean_driving_record = models.BooleanField(default=True)
+    has_first_aid_training = models.BooleanField(default=False)
 
     class Meta:
         verbose_name_plural = 'Conductores'

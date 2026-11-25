@@ -559,3 +559,62 @@ class GPSDeviceModelAndAPITests(TestCase):
         self.assertTrue(device.check_api_key(new_key))
         self.assertFalse(device.check_api_key(raw_key))  # Clave vieja revocada
 
+    def test_driver_extended_profile_and_password_sync(self):
+        from DjangoProject1.apps.fleet.models import Driver
+        from DjangoProject1.apps.fleet.serializers import DriverSerializer
+
+        payload = {
+            "full_name": "Carlos Eduardo Rodríguez Morales",
+            "first_name": "Carlos Eduardo",
+            "last_name": "Rodríguez Morales",
+            "document_type": "CC",
+            "document_number": "1024567890",
+            "birth_date": "1990-05-14",
+            "email": "carlos.rodriguez@universalbuses.com",
+            "phone_number": "+57 310 987 6543",
+            "address": "Calle 45 # 12-30, Ciudadela Norte",
+            "password": "ClaveConductor2026!",
+            "license_number": "LC-89472910-B",
+            "license_category": "C3",
+            "license_expiry": "2028-11-20",
+            "experience_years": 4,
+            "blood_group": "O+",
+            "operational_status": "DISPONIBLE",
+            "is_active": True,
+            "has_medical_exam": True,
+            "has_psychosensometric_test": True,
+            "has_clean_driving_record": True,
+            "has_first_aid_training": False,
+        }
+        serializer = DriverSerializer(data=payload)
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        driver = serializer.save()
+
+        self.assertEqual(driver.first_name, "Carlos Eduardo")
+        self.assertEqual(driver.last_name, "Rodríguez Morales")
+        self.assertEqual(driver.document_number, "1024567890")
+        self.assertEqual(driver.license_category, "C3")
+        self.assertEqual(driver.blood_group, "O+")
+        self.assertEqual(driver.operational_status, "DISPONIBLE")
+        self.assertFalse(driver.has_first_aid_training)
+        self.assertNotIn("password", serializer.data)
+
+        # Verificar usuario vinculado
+        self.assertIsNotNone(driver.user)
+        self.assertEqual(driver.user.role, "driver")
+        self.assertEqual(driver.user.identification_number, "1024567890")
+        self.assertEqual(driver.user.email, "carlos.rodriguez@universalbuses.com")
+        self.assertTrue(driver.user.check_password("ClaveConductor2026!"))
+        self.assertFalse(driver.user.password_change_required)
+
+        # Actualizar contraseña al editar
+        update_serializer = DriverSerializer(
+            driver,
+            data={"password": "NuevaClaveConductor99!"},
+            partial=True,
+        )
+        self.assertTrue(update_serializer.is_valid(), update_serializer.errors)
+        driver = update_serializer.save()
+        driver.user.refresh_from_db()
+        self.assertTrue(driver.user.check_password("NuevaClaveConductor99!"))
+

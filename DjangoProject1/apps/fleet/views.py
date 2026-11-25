@@ -92,7 +92,7 @@ class BusTypeViewSet(ModelViewSet):
 
 
 class DriverViewSet(ModelViewSet):
-    queryset = Driver.objects.all().order_by("id")
+    queryset = Driver.objects.select_related("user").all().order_by("id")
     serializer_class = DriverSerializer
     permission_classes = [IsAdminOrReadOnly]
 
@@ -100,6 +100,8 @@ class DriverViewSet(ModelViewSet):
         queryset = super().get_queryset()
         search = self.request.query_params.get("search", "").strip()
         license_num = self.request.query_params.get("license_number", "").strip()
+        document_num = self.request.query_params.get("document_number", "").strip()
+        operational_status = self.request.query_params.get("operational_status", "").strip()
         is_active_param = self.request.query_params.get("is_active")
 
         if is_active_param is not None:
@@ -111,9 +113,17 @@ class DriverViewSet(ModelViewSet):
 
         if license_num:
             queryset = queryset.filter(license_number__icontains=license_num)
+        if document_num:
+            queryset = queryset.filter(document_number__icontains=document_num)
+        if operational_status:
+            queryset = queryset.filter(operational_status__iexact=operational_status)
         if search:
             queryset = queryset.filter(
                 models.Q(full_name__icontains=search)
+                | models.Q(first_name__icontains=search)
+                | models.Q(last_name__icontains=search)
+                | models.Q(document_number__icontains=search)
+                | models.Q(email__icontains=search)
                 | models.Q(license_number__icontains=search)
                 | models.Q(phone_number__icontains=search)
             )

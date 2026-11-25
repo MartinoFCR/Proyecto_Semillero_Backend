@@ -700,13 +700,15 @@ del bus incluye también `bus_type_detail`.
 
 Estados de bus: `Active`, `Inactive`, `Maintenance`.
 
-### Conductores
+### Conductores (`/api/fleet/drivers/`)
 
 ```text
 GET    /api/fleet/drivers/
-GET    /api/fleet/drivers/?search={nombre_licencia_o_telefono}
+GET    /api/fleet/drivers/?search={nombre_documento_correo_licencia_o_telefono}
 GET    /api/fleet/drivers/?is_active={true|false}
+GET    /api/fleet/drivers/?operational_status={DISPONIBLE|ACTIVO|CAPACITACION}
 GET    /api/fleet/drivers/?license_number={licencia}
+GET    /api/fleet/drivers/?document_number={documento}
 POST   /api/fleet/drivers/
 GET    /api/fleet/drivers/{id}/
 PUT    /api/fleet/drivers/{id}/
@@ -714,9 +716,39 @@ PATCH  /api/fleet/drivers/{id}/
 DELETE /api/fleet/drivers/{id}/
 ```
 
-Crear un conductor (Ficha operativa pura sin relación con usuario):
+Crear o editar un conductor (sincroniza automáticamente su usuario con `role="driver"`):
 
-El conductor se registra únicamente con sus datos laborales/operativos. No requiere usuario, ni rol, ni correo, ni contraseña.
+```json
+{
+  "full_name": "Carlos Eduardo Rodríguez Morales",
+  "first_name": "Carlos Eduardo",
+  "last_name": "Rodríguez Morales",
+  "document_type": "CC",
+  "document_number": "1024567890",
+  "birth_date": "1990-05-14",
+  "email": "carlos.rodriguez@universalbuses.com",
+  "phone_number": "+57 310 987 6543",
+  "address": "Calle 45 # 12-30, Ciudadela Norte",
+  "password": "ClaveConductor2026!",
+  "license_number": "LC-89472910-B",
+  "license_category": "C3",
+  "license_expiry": "2028-11-20",
+  "experience_years": 4,
+  "blood_group": "O+",
+  "operational_status": "DISPONIBLE",
+  "is_active": true,
+  "has_medical_exam": true,
+  "has_psychosensometric_test": true,
+  "has_clean_driving_record": true,
+  "has_first_aid_training": false
+}
+```
+
+- **`password`** (`write_only`, opcional):
+  - Si se envía al crear, se asigna al `User` del conductor (`role="driver"`) con `password_change_required = False`.
+  - Si no se envía (o viene vacío) al crear, se asigna como contraseña inicial su `document_number` (o `license_number`) con `password_change_required = True`.
+  - Si se envía al editar (`PUT`/`PATCH`), actualiza la contraseña del usuario del conductor. Nunca se devuelve en las respuestas JSON.
+- **`photo` / `photo_url`**: Soporta subida de foto (`multipart/form-data`) y expone `photo_url` en lectura.
 
 ```json
 {
