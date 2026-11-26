@@ -53,6 +53,27 @@ class SupportRequestViewSet(ModelViewSet):
 
         return queryset
 
+    def create(self, request, *args, **kwargs):
+        key = f"support-create:{request.user.pk}"
+        if not cache.add(key, True, timeout=60):
+            return Response(
+                {"code": "rate_limited", "detail": "Espera un minuto antes de crear otra solicitud."},
+                status=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        sale = serializer.validated_data.get("sale")
+        if sale and sale.buyer_id != request.user.pk:
+            return Response(
+                {"code": "sale_not_owned", "detail": "La venta no pertenece al cliente."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        instance = serializer.save(customer=request.user)
+        return Response(
+            self.get_serializer(instance).data,
+            status=status.HTTP_201_CREATED,
+        )
+
 
 class SystemErrorLogViewSet(ModelViewSet):
     """Módulo administrativo para auditoría, trazabilidad y resolución de errores del sistema."""
@@ -95,28 +116,6 @@ class SystemErrorLogViewSet(ModelViewSet):
             )
 
         return queryset
-
-
-    def create(self, request, *args, **kwargs):
-        key = f"support-create:{request.user.pk}"
-        if not cache.add(key, True, timeout=60):
-            return Response(
-                {"code": "rate_limited", "detail": "Espera un minuto antes de crear otra solicitud."},
-                status=status.HTTP_429_TOO_MANY_REQUESTS,
-            )
-        serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        sale = serializer.validated_data.get("sale")
-        if sale and sale.buyer_id != request.user.pk:
-            return Response(
-                {"code": "sale_not_owned", "detail": "La venta no pertenece al cliente."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-        instance = serializer.save(customer=request.user)
-        return Response(
-            self.get_serializer(instance).data,
-            status=status.HTTP_201_CREATED,
-        )
 
 
 class AuditLogViewSet(ReadOnlyModelViewSet):
